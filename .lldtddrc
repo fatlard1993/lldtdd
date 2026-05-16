@@ -1,0 +1,5 @@
+{
+  "mappings": [
+    { "glob": "examples/**/*.lld.md", "adapter": "bun" }
+  ]
+}
