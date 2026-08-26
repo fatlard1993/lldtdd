@@ -89,21 +89,12 @@ This is the real, shipped `examples/auth.lld.md` -- run `lldtdd run examples/aut
 sources directly with no build step, generates `bun:test` files, and executes them via
 `Bun.spawn`. There is no Node-compatible build, and there isn't going to be one.
 
-**The package is not yet published to the npm registry**, so `bun add lldtdd` will not find it today.
-Until it is, run from a clone:
-
-```bash
-git clone https://github.com/fatlard1993/lldtdd.git
-cd lldtdd && bun install
-bun run src/cli.ts run    # or run `bun link` here once, then `lldtdd run` from any project
-```
-
-Once it is published, the intended install path will be:
-
 ```bash
 bun add -d lldtdd
 bunx lldtdd run
 ```
+
+Working on lldtdd itself is a clone: `git clone https://github.com/fatlard1993/lldtdd.git && cd lldtdd && bun install`, then `bun run src/cli.ts` in place of `bunx lldtdd`.
 
 Linux and macOS only, as declared in `package.json`; there is no Windows support today.
 
