@@ -69,6 +69,12 @@ async function session(): Promise<Session | null> {
     const proc = Bun.spawn([
       bin, "--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`,
       "--no-first-run", "--no-default-browser-check", "--disable-gpu", "--hide-scrollbars",
+      // CI only: GitHub's ubuntu-24.04 runners AppArmor-block the unprivileged user namespaces
+      // Chrome's sandbox needs, so it dies before ever writing DevToolsActivePort -- which is the
+      // failure the timeout below reports, uselessly, as a launch that went quiet. Locally the
+      // sandbox stays on; in CI the runner VM is the isolation boundary, and the job it runs in
+      // already executes the same untrusted document code directly in bun.
+      ...(process.env.CI ? ["--no-sandbox"] : []),
       // A stated viewport is part of the question: "flips when it would overflow" has no meaning
       // without an edge to overflow. This is the one layout input a claim cannot supply itself.
       "--window-size=1024,768", "about:blank",
