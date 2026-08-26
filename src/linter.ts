@@ -132,11 +132,12 @@ function finalizeGroup(state: LintState): void {
 
 // Unicode arrows are valid in assertion lines (parser normalises both → and ->)
 // Only flag → in prose (non-assertion, non-annotation) lines
-function lintCharacterPolicy(t: string, ln: number, warn: LintState["warn"]): void {
+function lintCharacterPolicy(t: string, ln: number, warn: LintState["warn"], err: LintState["err"]): void {
   const isAssertionLine = t.startsWith("- ") || t.startsWith("  - ");
   const isAnnotationLine = t.startsWith("**");
   if (!isAssertionLine && !isAnnotationLine && t.includes("→"))
     warn(ln, 'Unicode arrow in prose -- use -> in assertion lines for consistency');
+  if (t.includes("\u2014")) err(ln, 'Em-dash found: use -- or rephrase');
 
   // Deprecated ASCII separator " - prose" in assertions (context-aware)
   if (t.startsWith("- ") && !t.includes("->") && / - [a-z]/.test(t)) {
@@ -466,7 +467,7 @@ export async function lintFile(filePath: string, opts: ExecutionOptions = {}): P
     const ln = i + 1;
     const t  = state.lines[i].trim();
 
-    lintCharacterPolicy(t, ln, state.warn);
+    lintCharacterPolicy(t, ln, state.warn, state.err);
     if (lintStructure(state, t, ln)) continue;
     if (!state.currentGroup) continue;
     if (lintAnnotationSyntax(state, t, ln, state.currentGroup)) continue;

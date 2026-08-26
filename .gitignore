@@ -7,3 +7,6 @@ node_modules/
 # model-generated executable code, so it must never be committed by anyone still carrying one
 # from an older checkout.
 .lldtdd-cache.json
+
+# Per-machine Claude Code session state, never part of the project.
+.claude/

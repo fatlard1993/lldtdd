@@ -1,6 +1,12 @@
 {
   "name": "lldtdd",
   "version": "0.1.0",
+  "author": "justfatlard <fatlard1993@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fatlard1993/lldtdd.git"
+  },
   "description": "Runnable Low Level Design docs: design documents whose claims execute as tests",
   "type": "module",
   "keywords": [
