@@ -37,11 +37,8 @@ repo." So a hostile `.lld.md` in a branch you fetch and run is arbitrary code ex
 with your environment, the shortest path being a single `inspect` claim that reads `process.env`.
 
 This is inherent: `run` and `mutate` execute code by design, so the residual risk here is not a bug to
-fix but a trust/UX decision about *when* to execute a document that did not originate locally. Two
-things that used to make it worse have been fixed in code: a subject can no longer make a run vanish
-with exit 0 (the fact-extraction import is isolated and an early exit is reported as a failure, see
-above), and the read-only verbs can no longer be steered into reading files outside the project. What
-remains is the execution decision itself. Options under consideration:
+fix but a trust/UX decision about *when* to execute a document that did not originate locally. Options under
+consideration:
 
 - Require an explicit opt-in (e.g. `--i-trust-this` or a first-run confirmation) before `run`/`mutate`
   execute a document that did not originate locally.

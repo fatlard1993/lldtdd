@@ -12,15 +12,15 @@ Every finding below is a real edit made to real documents, not a hypothetical.
 
 Every rule below is about making a claim read well once it's decided the claim belongs. This one comes first because it's about whether it belongs at all -- a well-worded sentence can still be the wrong thing to write down.
 
-The question isn't (only) GRAMMAR.md's three-questions test applied claim by claim -- a claim can individually pass "would a naive implementer get this wrong?" and still be the wrong thing for the file to contain, because it belongs to a later phase of the project than the one the document is capturing. The question to ask about the file as a whole: **would someone sketch this before writing a line of code, or did it get added later, after the core idea already existed, to harden an edge?**
+The question isn't (only) README.md's three-questions test applied claim by claim -- a claim can individually pass "would a naive implementer get this wrong?" and still be the wrong thing for the file to contain, because it belongs to a later phase of the project than the one the document is capturing. The question to ask about the file as a whole: **would someone sketch this before writing a line of code, or did it get added later, after the core idea already existed, to harden an edge?**
 
 A rate limiter's founding shape is one sentence: requests are limited per key by a sliding window that resets from first use, not a clock boundary. A dedicated group for "limit of zero," a separate one for "limit of one," and a third for the exact arithmetic of quota decrementing are all real and all true -- and all belong to the phase *after* that founding sentence, when the core idea is already built and being stress-tested at its edges. None of them change what the rate limiter fundamentally *is*.
 
 The same tell shows up as boilerplate in CRUD-shaped domains: "all fields can be updated after a bookmark is created" is true of nearly any record type and isn't a decision anyone had to make -- contrast it with "a bookmark belongs to at most one category" and "categories are a flat collection," which *are* decisions (nesting was on the table; single-tag-only was on the table) and read as such.
 
-It also shows up as unbounded growth in a library that started with a real founding shape and kept accumulating documented features past it. Two groups can capture what a reactive container fundamentally is -- plain-object ergonomics on top of the platform's own event system, and rejecting anything that isn't a plain object. One real consuming project's LLD briefly grew fifteen groups past that point (manual batching, deferred batching, memoized derivation, multi-key subscriptions) before an editorial pass cut them back -- each one was true and was legitimate library documentation, but collectively they read as a finished feature catalog, not the sketch that came before any of those features existed. Neither shape is wrong -- a mature library's `.lld.md` can reasonably be a catalog -- but know which one you're writing, and don't mistake the catalog for the founding document when someone asks what the thing fundamentally *is*.
+It also shows up as unbounded growth in a library that started with a real founding shape and kept accumulating documented features past it. Two groups can capture what a reactive container fundamentally is -- plain-object ergonomics on top of the platform's own event system, and rejecting anything that isn't a plain object. Fifteen groups past that point (manual batching, deferred batching, memoized derivation, multi-key subscriptions) -- each true, each legitimate library documentation -- collectively read as a finished feature catalog, not the sketch that came before any of those features existed. Neither shape is wrong -- a mature library's `.lld.md` can reasonably be a catalog -- but know which one you're writing, and don't mistake the catalog for the founding document when someone asks what the thing fundamentally *is*.
 
-The strongest antidote isn't cutting harder, it's writing the *why* the way one real consuming project's own document does: "`select` earns its place when two or more subscribers on the same `apiId` need different shapes from the same response. For a single subscriber, the transform belongs in `onResponse` directly." That's a decision being argued, not a feature being logged. If a claim can't be reframed that way -- if there's no trade-off to explain, just a behavior to enumerate -- it's probably hardening, not founding, and belongs in the unit test suite or a later revision of the document, not the first one.
+The strongest antidote isn't cutting harder, it's writing the *why*: "`select` earns its place when two or more subscribers on the same `apiId` need different shapes from the same response. For a single subscriber, the transform belongs in `onResponse` directly." That's a decision being argued, not a feature being logged. If a claim can't be reframed that way -- if there's no trade-off to explain, just a behavior to enumerate -- it's probably hardening, not founding, and belongs in the unit test suite or a later revision of the document, not the first one.
 
 ---
 
@@ -46,7 +46,7 @@ When a claim is actually doing two jobs, say so explicitly: don't let the second
 **After**:
 > `clearCanvas()` has two separate jobs: erase the drawn content, and reset any stroke currently being tracked.
 
-"Resets stroke state" reads like an implementation detail bolted onto the real job (clearing). Naming it as a second, coequal axis is what let the perspective questions actually test both -- and what surfaced that the real implementation was only doing the first job (a genuine bug, found because the document was precise enough to expose the gap).
+"Resets stroke state" reads like an implementation detail bolted onto the real job (clearing). Naming it as a second, coequal axis is what let the perspective questions actually test both -- and what surfaced that the implementation was only doing the first job, a real bug the vaguer sentence had hidden.
 
 Same pattern, Table:
 > The first click on a column sorts it descending; a second click on the same column toggles to ascending -- sorting only moves between columns, there is no click back to unsorted.
@@ -63,7 +63,7 @@ Not "clicking toggles sort direction." A toggle with a starting state, a directi
 
 Menu and Button don't share an activation path -- they share a *design principle*, applied independently in each component's own code. "Same path" is a claim about implementation; "same principle" is a claim about intent. Get this wrong and a reader assumes a refactor-safe shared abstraction exists where there's really just a convention two components both happen to follow.
 
-The same review caught the flip side in the same document: "one handler" became "one event" once it was clear Menu has two separate event handlers (pointer, keyboard) that both emit one event. The plurality of the mechanism and the singularity of the outcome are different facts -- say the one that's actually true.
+The flip side: Menu has two separate event handlers (pointer, keyboard) that both emit one event, so "one event" is true and "one handler" is not. The plurality of the mechanism and the singularity of the outcome are different facts -- say the one that's actually true.
 
 ## Give every claim a perspective, or don't leave it bare
 
@@ -74,9 +74,8 @@ on what your module *is* -- a component class, a caching-fetch client, a `create
 is not something you should have to hold in your head while deciding how to phrase a design
 decision. Write the perspective and the claim is checkable regardless.
 
-This used to be less honest. Bare invariants matched a "the call didn't throw" check and reported
-as **passing**, so a document full of them looked verified while testing nothing about what it
-claimed. Pending is the truthful state for a claim like that, and `lldtdd lint` now names them.
+A bare invariant that merely ran without throwing would look verified while testing nothing about
+what it claims. Pending is the truthful state for it, and `lldtdd lint` names them.
 
 **Before** (Popover, two bare claims):
 > When the popover would overflow an edge, the position flips; this calculation runs on each `show()` call so it stays accurate as the page scrolls or resizes.
@@ -116,14 +115,14 @@ Callers can reassign `position` freely without cleaning up after the previous va
   - does changing position leave only the new class active?
 ```
 
-Four documents in one corpus had this shape. It was invisible in every run: the tests passed, the
-counts looked reasonable, and only reading the structure directly turned it up. The rule that
+This shape is invisible in a run: the tests pass and the counts look reasonable; only reading the
+structure turns it up. The rule that
 prevents it is simple: **bullets are claims, prose is reasons.** If a sentence cannot be wrong, it is
 not a claim, and it belongs above the list rather than in it.
 
 ## Don't repeat a perspective's exact wording across groups
 
-**Before** (a real consuming project's search.lld.md: the same perspective question attached verbatim to two different parent claims across two different groups, plus a near-duplicate "immediacy" claim inside one of those groups):
+**Before** (the same perspective question attached verbatim to two different parent claims across two different groups, plus a near-duplicate "immediacy" claim inside one of them):
 > - does a search return a list of results? *(appeared under two unrelated claims)*
 
 **After**: merged into one claim, one new and *distinct* perspective:

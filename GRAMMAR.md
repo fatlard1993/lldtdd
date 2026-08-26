@@ -89,13 +89,11 @@ Used for universal properties, safety invariants, and ordering claims.
 no way to check one without inventing a criterion the author never wrote. An invariant stays
 pending unless it carries a perspective or an inline call, or an AST pattern recognizes it.
 
-That was not always true, and the change is worth understanding. The phrases below used to map to
-a "the call did not throw" check whenever the group carried a `**method:**` -- so every claim in
-the example above reported as **passing** against an event bus whose `publish()` had been gutted
-to an empty body. A no-throw check is not a check of "subscribers fire synchronously"; it is a
-check of nothing in particular, wearing that claim's name.
+A no-throw check is not a check of "subscribers fire synchronously"; it is a check of nothing in
+particular, wearing that claim's name -- it would report **passing** against an event bus whose
+`publish()` had been gutted to an empty body.
 
-Some of these phrases still resolve to a concrete assertion, because the phrase itself names one:
+Some phrases resolve to a concrete assertion on their own, because the phrase itself names one:
 
 | Phrase pattern | Maps to |
 |---|---|
@@ -107,7 +105,7 @@ Some of these phrases still resolve to a concrete assertion, because the phrase 
 | `a failed X does not stall/block/crash Y` | fault-resilience (needs a resolvable fault target) |
 | `only declared fields survive`, `undeclared fields are dropped` | schema-drop |
 
-These no longer resolve on their own, because no-throw was the only thing they ever produced --
+These do not resolve on their own, because no-throw is the only check they could produce --
 `X is safe`, `does nothing`, `does not throw`, `no error`, `is a valid state`, `does not
 affect/fire/receive/create/store/…`, `can [be] verb`, `requires no X`, `need not`, `is
 structural`, `returns a list/array`. Write the invariant as prose (that is what it is for) and
@@ -246,8 +244,7 @@ It happens when a rationale bullet sits between a claim and its perspective --
 
 The check above proves the first bullet and is filed under the second, so the claim it verifies still
 reads as pending. Keep rationale in the section prose and bullets for claims, and the problem cannot
-arise. Four documents in one corpus had this, every one of them invisible until the structure was
-inspected directly.
+arise.
 
 ### Two forms
 
@@ -337,12 +334,9 @@ the list of shapes that would make it concrete.
 ```
 
 To assert on a property, capture the result and name it: `call(...) captures r -> r.allowed === true`.
-Three entries used to live here instead -- `allowed`, `denied`, and the literal phrases
-`account locked` / `rate limited` -- and they were removed for the reason the removed pattern
-catalog was: they read nothing out of the claim. `allowed` hard-coded the property name
-`result.allowed`, so it worked for one example module and silently went pending for every other,
-and reworded prose lost its test while still reading as verified. A captured property check says
-which property, on which call, and generalizes to any module.
+A captured property check says which property, on which call, and generalizes to any module; a
+bare value-word like `allowed` would hard-code one module's property name and silently pend on
+every other.
 
 ### Resolves (no throw)
 ```
@@ -508,8 +502,7 @@ Fully generalized: any module of this shape, any claim using this vocabulary, no
 When a module exports `export default class X extends Y` (non-EventTarget), lldtdd derives tests from
 the vocabulary families below. Every one of them is **structural**: it reads its values out of the
 claim text or out of the module's own declarations, so it fires for a component and an option name it
-has never seen. There is no per-project catalog and no named fixtures: that mechanism was removed,
-and with it the ability to register a hand-written body for one specific sentence.
+has never seen. There is no per-project catalog and no named fixtures.
 
 Several families need to construct the component the way its author intended, and they read that from
 the module: a `static schema`, JSDoc `@param` lines, or a TypeScript `options` type. If the module
@@ -629,7 +622,7 @@ When a module exports `export default class X` that assigns `this.options = ...`
 
 A second, complementary path resolves `result.FIELD === VALUE` / `result.FIELD → absent` / throw assertions against a synthetic `__lld_api` description (usually auto-generated from the module's TypeScript types) -- this is what lets a bare `**method:**` group with no other annotation derive real `process.argv` + parse-and-assert code for arbitrary flag names, types (boolean, integer, alias, negation, `--flag=value`, pass-through), matched to the field's declared type rather than a hardcoded example.
 
-Fully generalized: any class-based parser of this shape, any claim in this vocabulary. One ordering caution if you're editing the derivation itself: "non-zero exit code" must be checked before "zero exit code" -- a looser zero-exit check placed first will silently swallow a non-zero-exit claim. This has already caused one regression (a non-zero-exit claim in a real consuming project's docs briefly resolving through the wrong branch).
+Fully generalized: any class-based parser of this shape, any claim in this vocabulary. One ordering caution if you're editing the derivation itself: "non-zero exit code" must be checked before "zero exit code" -- a looser zero-exit check placed first will silently swallow a non-zero-exit claim.
 
 ### Text transformers, pipeline chains, and structural comparators
 
@@ -641,8 +634,8 @@ functions it has never seen and declines, leaving the claim pending, when the sh
   demonstrably parses a structured text format. Detection requires format-token evidence in the
   source (short `.startsWith("# ")`-style markers), and the synthetic valid input for the derived
   call is built from those very tokens. The token gate is load-bearing: string-in, object-out is
-  one of the most common signatures there is, and without the gate a drift comparator taking a
-  `beforeSource: string` was once misclassified as a text parser.
+  one of the most common signatures there is, and without the gate any comparator taking a
+  `beforeSource: string` would classify as a text parser.
 - **Pipeline chains** are detected when one exported function's return type is another exported
   function's first-parameter type (`Promise<T>` unwraps, and `export { X } from "Y"` re-exports
   are followed). A claim about a late stage then derives its whole setup: each predecessor runs in
@@ -662,10 +655,9 @@ functions it has never seen and declines, leaving the claim pending, when the sh
 
 Four further scenarios in this family exercise a class-based CLI parser's transform machinery,
 and they gate exactly as the CLI family above does: on a constructible default export that
-declares `parse()`. The gate exists because these scenarios are reachable from raw claim prose,
-and without it a value-mapper module with a claim about a "replaceable transform map" derived a
-CLI parser test and reported the claim as failing for a premise the author never wrote.
-`src/family-coverage.test.ts` pins that such a module now declines and the claims stay pending.
+declares `parse()`. These scenarios are reachable from raw claim prose, so the gate is what keeps a
+non-parser module with transform-flavored claims from deriving a parser test it can only fail;
+`src/family-coverage.test.ts` pins that such a module declines and the claims stay pending.
 
 | Claim vocabulary | Derived test |
 |---|---|
@@ -691,7 +683,10 @@ When a module exports (or re-exports) an entity built with `createCRUD(name, fie
 
 The FK-derived patterns (orphan-delete, move-delete, snapshot-restore) read `AstFacts.foreignKeys` directly from the module's exports -- they aren't hardcoded to `bookmarks`/`categories` specifically, so they generalize to any CRUD entity with a detected foreign-key relationship. The self-database claims (write-queue ordering, fault recovery) match on short phrase-fragments (`order`/`structural`, `fail`/`recover`) rather than one exact sentence, and are gated on `facts.isSelfDatabase` -- a module with an `init`, a `write()` and a `db`, and no imported database. The queue itself is detected by shape (a property seeded with `Promise.resolve()` and reassigned from itself), not by being named `_writeQueue`; `lld/fixtures/selfdb.ts` is a synthetic module that pins that.
 
-A third claim in this family -- that existing records gain empty-string defaults for new fields -- was removed rather than fixed. It asserted that a raw store had defaulted a field name the store was never told about, which nothing can satisfy, and the helper behind it supplied the value it was asked about, so the check passed against a write path sabotaged to discard every record. Field defaults are checkable where the fields are *declared* -- see "missing fields default to empty string" in the CRUD table above -- so point such a claim at the module that declares them, with a `**module:**` override if the document is about persistence.
+Field defaults are checkable where the fields are *declared* -- see "missing fields default to
+empty string" in the CRUD table above. A claim that a raw store defaulted a field it was never
+told about is satisfiable by nothing; point such a claim at the module that declares the fields,
+with a `**module:**` override if the document is about persistence.
 
 ### Caching-fetch clients
 
@@ -750,13 +745,13 @@ more useful than, a claim quietly anchored to nothing.
 
 When a module exports a function literally named `derive` (`export function derive(selector, combiner, options)`), lldtdd recognizes claims about the reactive-derivation contract: a derived value recomputes only when a value its selector actually reads changes, throws at construction if the selector reads nothing reactive, receives combiner arguments in selector order, notifies subscribers with the new value, skips notification when `memoize: true` and the result is unchanged, updates from inputs across multiple source instances, propagates through chained derivations, coalesces multiple same-batch input changes into one notification, and stops notifying after `destroy()`.
 
-Triggers are short phrase-fragments (`recomputation`, `combiner`/`order`, `memoiz*`, `chain*`/`upstream`, ...) rather than full-sentence matches, same style as HTTP clients above -- but still validated against exactly one real consuming project. A substantially different phrasing for the same concept is worth checking with `--verbose`.
+Triggers are short phrase-fragments (`recomputation`, `combiner`/`order`, `memoiz*`, `chain*`/`upstream`, ...) rather than full-sentence matches, same style as HTTP clients above -- exercised against one consuming project so far, so a substantially different phrasing for the same concept is worth checking with `--verbose`.
 
 ### `styled()` / `configured()` factories
 
 When a module exports `export const styled = ...`, lldtdd recognizes claims about the higher-order component factory contract: two `styled()` calls on the same base class produce distinct scope classes, two instances of one styled component share a scope class, a styled instance is still `instanceof` its base class, template-literal and function-call syntax are equivalent (both attach a scope class), a function interpolated into the template literal receives the theme object, and `configured()` produces a component that behaves like its base class with the given defaults applied. These require a `**companion:**` annotation naming the base class module, imported as `_Companion` -- the factory has no fixed base class of its own to construct against, so `**companion:**` here is load-bearing, not optional convenience.
 
-**Phrase-fragment triggers, validated against one project.** Same style and caveat as the derive factory above: the triggers are short vocabulary fragments (`different`/`same scope class`, `both syntaxes`, `function syntax`, `template literal syntax`, `theme object`, `configured`, ...) rather than full-sentence matches, so rewording within that vocabulary still derives -- but they have been exercised against exactly one real consuming project, so a substantially different phrasing for the same contract is worth checking with `--verbose`.
+**Phrase-fragment triggers.** Same style and caveat as the derive factory above: short vocabulary fragments (`different`/`same scope class`, `both syntaxes`, `function syntax`, `template literal syntax`, `theme object`, `configured`, ...) rather than full-sentence matches, so rewording within that vocabulary still derives -- exercised against one consuming project so far, so a substantially different phrasing for the same contract is worth checking with `--verbose`.
 
 ---
 
@@ -769,34 +764,15 @@ Write the perspective. That is the supported answer, not a workaround.
   - render() then render() captures r -> r.elem.children.length === 1
 ```
 
-lldtdd's own documents currently resolve every claim they carry on exactly this basis, with no
-project-specific pattern catalog of any kind. That is a measurement, not a gate: CI runs the sweep
-as an audit, and nothing fails the build when a claim goes pending unless a caller opts into
-`--fail-on-pending`. `lldtdd run --no-mutate` in this repo prints the current split between direct
-and perspective-verified claims.
+A perspective lives in the document next to its claim and is keyed by position rather than by a
+regex over English: rewording the claim cannot silently unanchor it, and the reviewer auditing the
+design reads the check in place. What an unreachable claim usually describes is **intent**, and
+intent is not in the source -- "render() is idempotent" cannot be read off an implementation, so no
+derivation engine closes that gap. Writing down what the claim means is the feature.
 
-There used to be a second answer here: a project could supply *example-anchored* patterns in an
-`lldtdd.catalog.ts` at its root -- regexes matched against the near-exact wording of its own claims,
-each building a hand-written test body against its own internals. **That mechanism has been
-removed.** If you are migrating from a version that had it, each catalog pattern becomes a
-perspective on the claim it was keyed to.
-
-The reason it went, since it looked useful: an example-anchored pattern is a lookup table from one
-sentence to one hand-written test body. It is not derivation and cannot be, because what such
-claims describe is **intent**, and intent is not in the source -- "render() is idempotent" cannot be
-read off an implementation, and if `render()` had a double-append bug, structural derivation would
-faithfully derive "render() appends" and pass.
-
-So the real comparison was never *catalog vs. better AST work*. It was **catalog vs. perspective**,
-and the perspective wins on every axis:
-
-| | example-anchored catalog | concrete perspective |
-|---|---|---|
-| where the check lives | a `.ts` file, away from the claim | in the document, next to the claim |
-| keyed by | fuzzy regex over English prose | position in the document |
-| reword the claim | silently drops back to pending | unaffected |
-| two patterns matching one claim | needs a `priority` field and a collision auditor | cannot happen |
-| readable by a non-programmer reviewer | no | yes |
+lldtdd's own documents resolve every claim they carry on exactly this basis, with no
+project-specific pattern catalog of any kind; `lldtdd run --no-mutate` in this repo prints the
+current split between direct and perspective-verified claims.
 
 ---
 

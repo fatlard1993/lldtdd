@@ -247,10 +247,9 @@ Pending has four usual causes, in rough order of frequency:
    headless Chrome; on a machine with no Chrome or Chromium on `PATH`, its claims stay pending
    because the question was never put to anything, and the run output names that as the reason.
 
-**A bare prose claim will not turn green.** Prose like "a transfer does not affect the source
-balance" used to be matched to a check that the call didn't throw -- which passes for any function
-that doesn't crash, and would have stayed green if `transfer()` were gutted to an empty body. It
-is pending now. To make a claim checkable, give it one of:
+**A bare prose claim will not turn green.** "A transfer does not affect the source balance" names
+a design decision but nothing checkable -- a no-throw check would pass for any function that
+doesn't crash. It stays pending. To make a claim checkable, give it one of:
 
 - an outcome: `- wrong password -> \`AuthError\``
 - an inline call: `- addItem("sess1", "sku-out") -> \`CartError\``
@@ -297,51 +296,23 @@ inline call is how a claim about your own domain becomes checkable:
   - render() then render() captures r -> r.elem.children.length === 1
 ```
 
-That is the whole answer, and this project is its own evidence, stated as a measurement rather
-than a guarantee: at the time of writing, `bun run src/cli.ts run 'lld/**/*.lld.md' --no-mutate`
-reports 99 passed, 0 failed, 29 via perspectives, and nothing pending, and the examples corpus
-reports 24 passed, 16 via perspectives, 3 no-throw only, again nothing pending, with no
-project-specific pattern catalog of any kind, because those perspectives carry concrete calls.
-Nothing enforces those numbers: CI runs plain `run` as an audit, pending claims do not fail its
-build, and `--fail-on-pending` / `--fail-on-weak` remain available as opt-in ratchets for a corpus
-that wants to hold a state it has reached. The measurement also depends on capabilities, since
-browser-gated claims pend on a machine without Chrome. So treat the numbers above as a snapshot
-that can drift, and run `lldtdd run --no-mutate` in this repo for the current split between claims
-with a direct test and claims verified through perspectives.
+That is the whole answer. What such a claim describes is **intent**, and intent is not in the
+source: "render() is idempotent" cannot be read off an implementation, and if `render()` had a
+double-append bug, structural derivation would faithfully derive "render() appends" and pass. No
+pattern catalog closes that gap. The check has to be written down, and a perspective is where it
+goes: next to its claim, keyed by position rather than by a regex over English, readable by the
+same person auditing the design. If a claim no shipped pattern reaches matters to you, write the
+perspective -- that is not a workaround for a missing feature; it is the feature. lldtdd's own
+documents resolve every claim they carry on this basis; `lldtdd run --no-mutate` in this repo
+prints the current split between claims with a direct test and claims verified through
+perspectives.
 
-There used to be a second mechanism here. A project could supply *example-anchored* patterns --
-regexes matched against the near-exact wording of its own claims, each building a hand-written test
-body against its own internals -- and they covered the majority of claims in the component library
-this tool grew up alongside. They were removed, and the reasoning is worth stating because it is
-the same reasoning that removed the AI translator below:
-
-An example-anchored pattern is a lookup table from one sentence to one hand-written test body. It
-isn't derivation, and it can't be: what those claims describe is **intent**, and intent is not in
-the source. "render() is idempotent" cannot be read off an implementation; if `render()` had a
-double-append bug, structural derivation would faithfully derive "render() appends" and pass. So
-the real choice was never *catalog vs. better AST work*. It was **catalog vs. perspective** -- and a
-perspective wins on every axis. It lives in the document where a reader auditing the design can see
-it. It is keyed by position rather than by a fuzzy regex over English, so rewording a claim cannot
-silently drop it back to pending. And it needs no second file, no priority field, and no collision
-auditor to stay safe.
-
-If you have a claim that no shipped pattern reaches, write the perspective. That is not a
-workaround for a missing feature; it is the feature.
-
-An earlier version sent unmatched claims to a language model, which
-wrote a test body for them. Two things were wrong with it. The generated tests were the weakest in
-every suite -- most collapsed to "the call resolves", which passes for any function that doesn't
-throw and therefore verifies nothing -- and, more importantly, the derived suite became a function
-of network reachability, an API key, and a model version. The same commit could report differently
-on two machines. **A test runner whose results depend on which machine ran it is not reporting.**
-
-So the rule is now simple enough to hold in your head: a claim is verified by a rule you can read
-in [GRAMMAR.md](./GRAMMAR.md), or it is pending. Same document plus same source derives the same
-suite given the same capabilities. The one machine-shaped input left is whether a browser is
-present: browser-gated claims stay pending on a machine without Chrome, and the run output names
-that as the reason, so two machines can differ in what they verified but never in what a green
-means. If a claim you care about is pending, the fix is to give it a perspective or an inline
-call, which is also the thing that makes the claim concrete enough to be worth having.
+Derivation never calls a model and never touches the network. A claim is verified by a rule you
+can read in [GRAMMAR.md](./GRAMMAR.md), or it is pending: same document plus same source derives
+the same suite given the same capabilities. **A test runner whose results depend on which machine
+ran it is not reporting.** The one machine-shaped input is whether a browser is present:
+browser-gated claims stay pending on a machine without Chrome, and the run output names that as
+the reason, so two machines can differ in what they verified but never in what a green means.
 
 ---
 
