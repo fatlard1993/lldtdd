@@ -1,52 +1,88 @@
-# CLI Behavior
+# Command Surface
 > src/cli.ts
 
-The `run` command is the primary entry point. It executes the full pipeline — translating claims, generating tests, running them, checking drift, and running mutation testing — in one invocation. Exit codes are meaningful: 0 means the design document fully describes passing, well-verified behavior; non-zero means something requires attention.
+**mutate:** false
 
-## A passing suite exits zero
-**method:** `runPassingExample`
+lldtdd is invoked as a program before it is imported as a library, and the program's contract is
+the part a shell script or a CI step wires into: which commands exist, what a flag opts into, and
+what the exit code means. `src/cli.ts` is only argv parsing and dispatch -- the pipeline it
+dispatches to lives in `src/run.ts` and carries its own document, `lld/run.lld.md`. This one
+covers what the calling shell sees.
 
-- when all tests pass and no mutations survive, the process exits 0 — the document is current and its claims are strong enough to catch real bugs
-  - does runAndCheck return exitCode 0 on a known-passing LLD?
+Every claim below spawns the CLI as a real subprocess through `invokeCli` and inspects the exit
+code, because exit codes and dispatch are properties of the spawned program, not of any function a
+claim could call in-process. That is also why this document sets `**mutate:** false`: each claim
+already pays for a process, and mutating the dispatcher would re-spawn all of them once per mutant
+to probe wiring the claims exercise end-to-end anyway.
 
-## Mutation testing runs automatically after a passing suite
-**method:** `runPassingExample`
+## Asking for help succeeds; failing to name a command does not
 
-- `run` does not require a separate `mutate` invocation — if all tests pass, mutation testing runs automatically to check the strength of the claims
-  - does runAndCheck report mutation activity when tests pass?
+**method:** `invokeCli`
 
-## A failing suite exits non-zero
-**method:** `runFailingExample`
+A mistyped command that printed the help screen and exited 0 would pass a CI step that meant to
+run something. The same care applies one level down: every flag is boolean, so an unrecognized
+flag is a typo, and silently ignoring it does the opposite of what was asked -- `--no-mutat` would
+run the very mutation pass the user meant to skip.
 
-- when tests fail, the process exits non-zero to signal to the calling environment that the document is incomplete or the implementation has diverged
-  - does runAndCheck return exitCode 1 on a suite with failing tests?
-  - does runAndCheck return survivingMutations of zero when tests fail?
+- `help` prints the command surface and exits zero
+  - invokeCli("help") captures r → r.exitCode === 0
+- an unrecognized command exits non-zero instead of showing help and succeeding
+  - invokeCli("frobnicate") captures r → r.exitCode === 1
+- an unrecognized flag is rejected the same way, not silently ignored
+  - invokeCli("run", "--no-mutat") captures r → r.exitCode === 1
 
-## Surviving mutations exit non-zero
-**method:** `runSurvivingMutationsExample`
+## `run` hands the pipeline's exit code to the shell unchanged
 
-- a surviving mutation means a design claim cannot catch a real bug; this is treated as a build failure, not a warning; the process exits non-zero
-  - does runAndCheck return non-zero when mutations survive?
+**method:** `invokeCli`
 
-## Detecting drift does not fail the build
-**method:** `runPassingExample`
+What decides that code -- a false claim fails, drift and surviving mutations stay advisory -- is
+`lld/run.lld.md`'s subject. These claims pin that the program forwards the verdict rather than
+re-deciding it.
 
-- drift is informational — it surfaces divergence so the author can decide whether to update the document or revert the code; drift alone does not cause a non-zero exit
-  - does runAndCheck report hadDrift without causing a non-zero exit?
+- a document whose claims hold exits zero
+  - invokeCli("run", "lld/fixtures/passing.lld.md", "--no-mutate") captures r → r.exitCode === 0
+- a document with a false claim exits non-zero
+  - invokeCli("run", "lld/fixtures/failing.lld.md", "--no-mutate") captures r → r.exitCode === 1
 
-## Drift is checked as part of every run
-**method:** `runPassingExample`
+## `--fail-on-pending` and `--fail-on-weak` are opt-in ratchets
 
-- running `lldtdd run` always includes drift detection — callers do not need to invoke `drift` separately to keep the document current
-  - does runAndCheck report hadDrift information?
+**method:** `invokeCli`
 
-## Lint checks document structure independently of the module
+Pending is the correct state for a document written before its code, and a no-throw-only green may
+be all a liveness claim means, so neither fails a run by default -- this project's own CI runs
+plain `run`, as an audit rather than a gate. The flags exist for a corpus that has reached zero
+pending, or all-strong greens, and wants a regression from that state to fail the build. Each is a
+one-way tightening the caller chooses; left off, the exit-code contract above is unchanged.
 
-- `lldtdd lint` checks LLD files for structural and style problems without running any tests or loading any implementation module — it is the fast path for authors who want to validate their document format before running the full pipeline
-- lint exits non-zero when structural errors are found; it does not require the module to be present or to compile
+- without the flag, an all-pending document exits zero
+  - invokeCli("run", "lld/fixtures/pending.lld.md", "--no-mutate") captures r → r.exitCode === 0
+- with `--fail-on-pending`, the same document exits non-zero
+  - invokeCli("run", "lld/fixtures/pending.lld.md", "--fail-on-pending", "--no-mutate") captures r → r.exitCode === 1
+- without the flag, a document whose only green is a no-throw check exits zero
+  - invokeCli("run", "lld/fixtures/shallow.lld.md", "--no-mutate") captures r → r.exitCode === 0
+- with `--fail-on-weak`, the same document exits non-zero
+  - invokeCli("run", "lld/fixtures/shallow.lld.md", "--fail-on-weak", "--no-mutate") captures r → r.exitCode === 1
 
-## Suggest infers method annotations from exports
+## `lint` fails on errors, not warnings
 
-- `lldtdd suggest` reads the module and the LLD document, infers which group each unnamed group most likely corresponds to based on its claims, and shows the resulting `**method:**` annotations
-- `suggest --apply` writes the inferences back into the document; this is the intended bootstrap path when first adding a document to an existing codebase
-- suggest is conservative: it only emits annotations when confidence is high enough to be useful; partial matches are surfaced for human review, not auto-applied
+**method:** `invokeCli`
+
+Errors are defects in the document; warnings are judgment calls about how it is written, and a
+judgment call must not fail a build.
+
+- a structurally broken document exits non-zero
+  - invokeCli("lint", "lld/fixtures/missing-structure.lld.md") captures r → r.exitCode === 1
+- a clean document exits zero, even named under fixtures/ -- the sweep's exclusions apply to the glob, not to a file the user named
+  - invokeCli("lint", "lld/fixtures/passing.lld.md") captures r → r.exitCode === 0
+
+## A bare directory means everything under it
+
+**method:** `invokeCli`
+
+Handed a directory, the glob used to match the directory itself and die reading it -- an EISDIR
+that named this tool's file handling instead of what the user meant, which was unambiguous. A
+directory argument now expands to `<dir>/**/*.lld.md`, for `run` and `lint` alike, with the
+sweep's usual exclusions still applied.
+
+- naming a directory lints the documents under it instead of crashing on the directory
+  - invokeCli("lint", "lld") captures r → r.exitCode === 0

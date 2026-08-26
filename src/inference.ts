@@ -1,4 +1,7 @@
 import { existsSync } from "fs";
+import { readFile } from "fs/promises";
+import { Project, SyntaxKind, type SourceFile } from "ts-morph";
+import { inspectModule } from "./inspect.ts";
 
 export interface InferenceResult {
   method: string;
@@ -10,34 +13,140 @@ export interface ModuleInfo {
   api?: string;  // from __lld_api export if present
 }
 
-// Load a module's function exports. Returns empty if module doesn't exist.
+/** Whether the caller is allowed to load and run the module under test.
+ *
+ *  Importing a module runs its top-level code, so this is the boundary between commands that
+ *  are supposed to execute the subject (`run`, `mutate`) and commands whose name promises they
+ *  will only read it (`lint`, `suggest`). It defaults to false: a new caller that forgets to
+ *  think about this gets the reading path, not the running one. */
+export interface ExecutionOptions {
+  execute?: boolean;
+}
+
+// Cached per (path, mode): the static scan sees a superset of names in some files and a subset in
+// others, so a static answer must never be served to a caller that asked to execute, or vice versa.
 const moduleCache = new Map<string, ModuleInfo>();
 
-export async function getModuleInfo(modulePath: string): Promise<ModuleInfo> {
+export async function getModuleInfo(
+  modulePath: string,
+  { execute = false }: ExecutionOptions = {}
+): Promise<ModuleInfo> {
   if (!existsSync(modulePath)) return { exports: [] };
-  if (moduleCache.has(modulePath)) return moduleCache.get(modulePath)!;
+  const cacheKey = `${execute ? "run" : "read"}:${modulePath}`;
+  if (moduleCache.has(cacheKey)) return moduleCache.get(cacheKey)!;
 
-  try {
-    const mod = await import(modulePath);
-    const exports = Object.keys(mod).filter(k =>
-      typeof mod[k] === "function" && k !== "default" && !k.startsWith("__")
-    );
-    const api = typeof mod.__lld_api === "string" ? mod.__lld_api.trim() : undefined;
-    const info: ModuleInfo = { exports, api };
-    moduleCache.set(modulePath, info);
+  // Executing falls back to reading when the inspection fails. A DOM component module throws on
+  // import outside a browser-ish environment, and without the fallback `--execute` would report
+  // *fewer* exports than the default path -- an opt-in that asks for more and delivers less.
+  const info = (execute ? await loadModuleInfo(modulePath) : null)
+    ?? await readModuleInfo(modulePath);
+  if (info) {
+    moduleCache.set(cacheKey, info);
     return info;
+  }
+  return { exports: [] };
+}
+
+/** Imports the module -- top-level side effects run -- in a subprocess (see inspectModule), so a
+ *  subject that exits, crashes, or tampers with the process at import cannot reach lldtdd itself.
+ *  Only for callers that passed `execute`. Null when the module could not be inspected; the caller
+ *  then falls back to reading the source. */
+async function loadModuleInfo(modulePath: string): Promise<ModuleInfo | null> {
+  const inspected = await inspectModule(modulePath);
+  return inspected ? { exports: inspected.exports, api: inspected.api } : null;
+}
+
+/** Reads the same two facts off the source text. Nothing in the module runs.
+ *
+ *  Covers the four shapes that appear in practice -- `export function f`, `export const f = () =>`,
+ *  `export { f }`, and a `__lld_api` string or template literal. A shape it cannot see becomes a
+ *  missing export name, which costs a lint warning its precision; it never costs a false pass,
+ *  because the runner still executes the real module when the suite runs. */
+async function readModuleInfo(modulePath: string): Promise<ModuleInfo | null> {
+  let source: string;
+  try { source = await readFile(modulePath, "utf-8"); } catch { return null; }
+
+  const isJs = /\.[cm]?js$/.test(modulePath);
+  try {
+    const project = new Project({
+      skipAddingFilesFromTsConfig: true,
+      useInMemoryFileSystem: true,
+      compilerOptions: isJs ? { allowJs: true, checkJs: false } : {},
+    });
+    const sf = project.createSourceFile(isJs ? "module.js" : "module.ts", source);
+    const exports = new Set<string>();
+
+    for (const fn of sf.getFunctions()) {
+      const name = fn.getName();
+      if (fn.isExported() && name) exports.add(name);
+    }
+
+    // Named classes count: `typeof MyError === "function"`, so the loading path lists them and the
+    // reading path has to agree. Error subclasses are the common case, and a claim naming one
+    // resolves through this list.
+    //
+    // A *default*-exported class does not: the loading path reads `Object.keys(mod)` and drops
+    // `default`, so listing it here invented an export the other path never reports. That turned
+    // the linter's stale-`**method:**` check on, against a list the module does not actually have,
+    // and a group naming a static method of that class was reported as renamed.
+    for (const cls of sf.getClasses()) {
+      const name = cls.getName();
+      if (cls.isExported() && !cls.isDefaultExport() && name) exports.add(name);
+    }
+
+    for (const stmt of sf.getVariableStatements()) {
+      if (!stmt.isExported()) continue;
+      for (const decl of stmt.getDeclarations()) {
+        const init = decl.getInitializer();
+        if (!init) continue;
+        const kind = init.getKind();
+        const isFunction =
+          kind === SyntaxKind.ArrowFunction ||
+          kind === SyntaxKind.FunctionExpression;
+        if (isFunction) exports.add(decl.getName());
+      }
+    }
+
+    for (const decl of sf.getExportDeclarations()) {
+      for (const spec of decl.getNamedExports()) {
+        exports.add(spec.getAliasNode()?.getText() ?? spec.getName());
+      }
+    }
+
+    return {
+      exports: [...exports].filter(name => name !== "default" && !name.startsWith("__")),
+      api: readDeclaredApi(sf),
+    };
   } catch {
-    return { exports: [] };
+    return null;
   }
 }
 
+function readDeclaredApi(sf: SourceFile): string | undefined {
+  for (const stmt of sf.getVariableStatements()) {
+    if (!stmt.isExported()) continue;
+    for (const decl of stmt.getDeclarations()) {
+      if (decl.getName() !== "__lld_api") continue;
+      const init = decl.getInitializer();
+      if (!init) continue;
+      const literal = init.asKind(SyntaxKind.NoSubstitutionTemplateLiteral)
+        ?? init.asKind(SyntaxKind.StringLiteral);
+      if (literal) return literal.getLiteralText().trim();
+    }
+  }
+  return undefined;
+}
+
 // Convenience: just the export names
-export async function getModuleExports(modulePath: string): Promise<string[]> {
-  return (await getModuleInfo(modulePath)).exports;
+export async function getModuleExports(
+  modulePath: string,
+  opts: ExecutionOptions = {}
+): Promise<string[]> {
+  return (await getModuleInfo(modulePath, opts)).exports;
 }
 
 // Try to match a group heading to an exported function name.
-// Conservative — only matches when confident. Returns null if uncertain.
+// Conservative -- only matches when confident. Returns null if uncertain.
 export function matchGroupToExport(
   groupName: string,
   exports: string[]
@@ -110,7 +219,7 @@ function verbForms(word: string): string[] {
     forms.push(w.slice(0, -4) + "te");  // "creation" -> "create"
   }
   if (w.endsWith("al")) {
-    forms.push(w.slice(0, -2)); // "removal" -> "remov" — safe only if in exports
+    forms.push(w.slice(0, -2)); // "removal" -> "remov" -- safe only if in exports
   }
 
   return forms;
@@ -175,7 +284,7 @@ export function matchGroupToApi(
 
     const overlapCount = descTokens.filter(t => sourceBag.has(t)).length;
     // F1 of precision (overlap/desc) and recall (overlap/source):
-    // rewards specificity — a short description that matches all its tokens scores lower
+    // rewards specificity -- a short description that matches all its tokens scores lower
     // than a longer description that matches most of its tokens, because recall penalises
     // the short description's failure to cover the group vocabulary.
     const precision = overlapCount / descTokens.length;

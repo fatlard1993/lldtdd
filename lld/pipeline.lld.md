@@ -3,106 +3,86 @@
 
 A document becomes a test suite by translating each claim into a runnable test case. The pipeline has three stages: `parse` converts markdown into a document model, `translate` derives test cases from that model, and `synthesize` enriches the cases with argument shapes read from the module's source. Each stage is independently testable; the pipeline is the composition.
 
-## Derivation detects schema from source structure
-**module:** `src/ast.ts`
-**method:** `factsFromCrudSource`
+## Derivation reads the implementation, not annotations on it
+**module:** `src/ast/index.ts`
+**method:** `extractFacts`
+
+Production code stays production code. Nothing in a module has to be decorated, registered, or
+tagged for lldtdd to derive tests from it -- the AST is the interface, and a module that has never
+heard of this tool is fully usable by it.
 
 - the translator reads the implementation source to derive what tests to generate; it does not require the author to annotate production code with test metadata
-  - does extracting facts from a CRUD module produce a detected schema?
-
-## Modules without CRUD schema return empty schema lists
-**module:** `src/ast.ts`
-**method:** `factsFromNonCrudSource`
-
-- a module that contains no recognized schema factory produces empty schema metadata — derivation degrades gracefully rather than erroring
-  - does a module without a CRUD schema return an empty schemas list?
+  - extractFacts("lld/fixtures/subject.ts") captures r → r.returnTypes is defined
+  - extractFacts("lld/fixtures/subject.ts") captures r → r.exportVerbs is defined
 
 ## A missing module produces null, not an error
-**module:** `src/ast.ts`
-**method:** `factsFromMissingPath`
+**module:** `src/ast/index.ts`
+**method:** `extractFacts`
 
-- asking for facts about a module that does not exist is a legitimate state during early design; the result is null, not a thrown error
-  - does extractFacts on a non-existent path return null — the check returns true when the path is missing?
-
-## The translator stage takes a document and produces a test suite
-**module:** `src/pipeline.ts`
-**method:** `translate`
-
-- `translate` takes an `LLDDocument` produced by `parse` and produces a `TestSuite`; the stages are linked by type — the output of one is the input of the next
-  - does translating a parsed document produce a suite with at least one group?
+- asking for facts about a module that does not exist is a legitimate state during early design -- the document is written before the code; the result is null, not a thrown error
+  - extractFacts("lld/fixtures/not-written-yet.ts") captures r → r === null
 
 ## Test cases carry a source tag communicating derivation confidence
-**module:** `src/pipeline.ts`
 **method:** `translate`
 
-- the source tag on each test case records how it was derived: `deterministic`, `ast-derived`, `ai`, or `needs-fixture`
+- the source tag on each test case records how it was derived: `deterministic` for a documented grammar rule, `ast-derived` for a structural pattern in the implementation, `pending` for a claim nothing derives yet
   - does a translated test suite produce test cases with defined source tags?
 
-## AI fills gaps with live network calls; results are cached
-**module:** `src/pipeline.ts`
+## Derivation is offline, so a suite is reproducible
 **method:** `translate`
 
-- when neither grammar nor AST derivation can match a claim, AI generates a test body by calling an external model — this is a live network call, not an offline lookup
-- to avoid redundant calls and cost, AI results are cached by claim text and module; the cache persists between runs and is invalidated when claims change
-  - does translation of an unmatchable claim produce a test case with source tag `ai` or `needs-fixture`?
+There was a fourth source tag once. A claim matching neither the grammar nor an AST pattern was
+sent to a model, which guessed a test body; the guesses were the weakest cases in every suite,
+most of them collapsing to a bare "the call resolves", which passes for any function that does not
+throw and so verified nothing. It was demoted back to pending often enough that the path was
+easier to describe than to defend.
 
-## Weak AI output is demoted rather than passed
-**module:** `src/pipeline.ts`
-**method:** `weakAiIsDemoted`
+The deciding argument was not quality but reproducibility. That path made the derived suite a
+function of network reachability, an API key, and a model version -- so the same commit could
+report differently on two machines. A test runner whose results depend on which machine ran it is
+not reporting. Everything the translator does now is a function of the document and the
+implementation source alone.
 
-- a test body that only asserts the call resolves — no captures, no field assertions — is no stronger than a pending test; the framework demotes uncaptured resolves from AI to `needs-fixture` rather than reporting them as passing
-- this keeps the passing count honest: a test that doesn't assert anything specific does not count as verified
-  - does an unmatchable claim produce a test case tagged as `ai` or `needs-fixture`?
+- the same document and the same implementation always derive the same suite; nothing in translation reads the network, a cache, or the clock
+  - does translating a document twice produce identical test cases?
 
-## When a claim has perspectives, the claim itself becomes pending
-**module:** `src/pipeline.ts`
-**method:** `perspectiveParentIsPending`
+## An unmatched claim stays pending rather than being guessed at
+**method:** `translate`
 
-- adding sub-perspectives to a claim means the perspectives are tested individually; the parent claim is not tested on its own — it becomes a pending summary of its sub-claims
-- this is intentional: the parent states the design decision, the perspectives test the angles; the parent has no independent assertion
+- a claim no rule matches is recorded as pending, not turned into a test that would pass without checking anything; pending says "this intent is documented but not yet verified", which is true, and a green from a guess says something false
+  - does an unmatchable claim produce a test case tagged `pending`?
+
+## Document-level lifecycle reaches the groups that did not override it
+**method:** `translate`
+
+Parsing records `**beforeAll:**` and `**beforeEach:**` written above the first group as document
+defaults and stops there -- see `lld/document.lld.md`. Translation is what hands them to each group,
+and it is the only place that can, because "did this group override the default" is a question about
+the assembled suite rather than about the text.
+
+- a group that declares no lifecycle of its own inherits the document's
+  - runDocument("lld/fixtures/doc-lifecycle.lld.md") captures r → r.failed === 0
+- a group that declares its own keeps it; the document default does not overwrite a local decision
+  - runDocument("lld/fixtures/doc-lifecycle.lld.md") captures r → r.passed === 2
+
+## When a claim has perspectives, the perspectives carry it
+**method:** `translate`
+
+The parent states the design decision and the perspectives test the angles, so the parent gets no
+test of its own. Translation says so by leaving its case unresolved; the runner reports that as
+`indirect` rather than as pending, because a claim whose perspectives all passed *has* been
+verified -- just not directly. Pending would say nothing checked it, which is a different and
+untrue thing. See `lld/run.lld.md` for the reporting contract.
+
+- adding sub-perspectives to a claim means the perspectives are tested individually; the parent claim is not tested on its own, so translation leaves it unresolved rather than inventing an assertion for it
   - does the parent of a claim with sub-perspectives become pending?
+  - runDocument("lld/fixtures/indirect.lld.md") captures r → r.indirect === 1
+- a parent carried entirely by its perspectives is still a success; it is counted apart from a direct pass so a reader can tell the two kinds of evidence apart
+  - runDocument("lld/fixtures/indirect.lld.md") captures r → r.exitCode === 0
 
 ## Unresolved claims produce test cases, never disappear
-**method:** `translatesDocumentGroupCount`
+**method:** `translate`
 
 - a claim the pipeline cannot translate into a runnable test is still visible in the output as a pending case; a failing translation is never mistaken for a passing one
   - does translating a document with one group produce a suite with exactly one group?
   - does a document with an unmatchable claim still produce at least one test case in the suite?
-
-## The synthesis stage enriches the suite with argument shapes
-**module:** `src/pipeline.ts`
-**method:** `synthesize`
-
-- `synthesize` takes a `TestSuite` from the translator and produces an enriched `TestSuite` with concrete argument values derived from module source signatures
-  - does synthesizing a translated suite produce a non-empty result?
-  - does the synthesized result preserve the groups from the input?
-
-## Lint checks document structure without running tests
-**module:** `src/pipeline.ts`
-**method:** `lintCleanDocument`
-
-- `lintFile` inspects an LLD document for structural problems — missing title, missing module pointer, empty groups, malformed annotations, stale method names — and returns a structured result; no module loading or test generation is involved
-- a well-formed document produces zero errors
-  - does linting a clean document return zero errors?
-
-## A structurally invalid document produces lint errors
-**module:** `src/pipeline.ts`
-**method:** `lintMissingStructure`
-
-- a document missing its title and module pointer is not a valid LLD; lint surfaces this as errors so the author can correct the structure before running the full pipeline
-  - does linting a document without title or module pointer produce at least one error?
-
-## Suggest infers method annotations from module exports
-**module:** `src/pipeline.ts`
-**method:** `suggestOnCleanDocument`
-
-- `suggestFile` reads the LLD and the module it points to, compares group names to exported function names, and returns inferred annotations; the author can review them before applying
-  - does running suggest on a document produce a result with a groups array?
-
-## The pipeline accepts in-memory content, not only files
-**module:** `src/cli.ts`
-**method:** `runContentExample`
-
-- `runContentAndCheck` runs the full pipeline on a raw LLD content string without requiring a file on disk — the module annotation in the content string is what links the document to its implementation
-- this is the intended form for programmatic or scenario-based pipeline use: a calling context can construct an LLD document inline and run it without writing to the filesystem
-  - does running an in-memory LLD document produce a RunOutcome?

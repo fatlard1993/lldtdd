@@ -4,6 +4,16 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "strict": true,
+    // Source is run directly by Bun, never emitted; imports keep their .ts extensions and tsc
+    // is only ever a checker here. Without these two, tsc rejects every internal import in the
+    // project before it reaches a single real error.
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    // A tool whose whole argument is that a green check must mean something should not ship
+    // dead bindings. `noUnusedLocals` caught a computed-but-never-read variable in linter.ts
+    // that had been there since the file was written.
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "types": ["bun-types"]
   },
   "include": ["src/**/*"]

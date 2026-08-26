@@ -1,24 +1,78 @@
 {
   "name": "lldtdd",
   "version": "0.1.0",
+  "description": "Runnable Low Level Design docs: design documents whose claims execute as tests",
   "type": "module",
+  "keywords": [
+    "lld",
+    "design-document",
+    "testing",
+    "test-generation",
+    "documentation",
+    "bun"
+  ],
+  "homepage": "https://github.com/fatlard1993/lldtdd#readme",
+  "bugs": "https://github.com/fatlard1993/lldtdd/issues",
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "os": [
+    "linux",
+    "darwin"
+  ],
   "bin": {
     "lldtdd": "./src/cli.ts"
   },
+  "//exports": "Bun-only: entry points are .ts source. No `default` condition on purpose -- it would point Node at a .ts file it cannot load; omitting it makes an unsupported runtime fail cleanly instead.",
   "exports": {
-    ".": "./src/cli.ts",
-    "./runtime": "./src/runtime.ts"
+    ".": {
+      "types": "./src/pipeline.ts",
+      "bun": "./src/pipeline.ts"
+    },
+    "./runtime": {
+      "types": "./src/runtime.ts",
+      "bun": "./src/runtime.ts"
+    },
+    "./ast": {
+      "types": "./src/ast/index.ts",
+      "bun": "./src/ast/index.ts"
+    }
   },
+  "files": [
+    "src",
+    "!src/**/*.test.ts",
+    "!src/__snapshots__",
+    "!src/**/.lldtdd-mut-*",
+    "examples",
+    "README.md",
+    "SECURITY.md",
+    "GRAMMAR.md",
+    "STYLE.md",
+    "LICENSE"
+  ],
   "scripts": {
     "dev": "bun run src/cli.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "prepack": "find src -name '.lldtdd-mut-*' -delete",
+    "prepare": "bun run prepare:githooks",
+    "prepare:githooks": "[ -n \"$CI\" ] && exit 0 || (git config --local core.hooksPath .githooks || echo 'Can not set git hooks')"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
     "glob": "^11.0.0",
     "ts-morph": "^28.0.0"
   },
+  "peerDependencies": {
+    "@happy-dom/global-registrator": ">=20"
+  },
+  "peerDependenciesMeta": {
+    "@happy-dom/global-registrator": {
+      "optional": true
+    }
+  },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@happy-dom/global-registrator": "^20.11.0",
+    "@types/bun": "latest",
+    "typescript": "^5.9.0"
   }
 }

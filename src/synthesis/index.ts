@@ -18,15 +18,15 @@ async function synthesizeGroup(group: TestGroup, modulePath: string): Promise<Te
 }
 
 async function synthesizeCase(tc: TestCase, modulePath: string): Promise<TestCase> {
-  // Already has explicit args — nothing to synthesize
+  // Already has explicit args -- nothing to synthesize
   if (tc.action.args !== undefined) return tc;
 
-  // No method — can't call anything
+  // No method -- can't call anything
   if (!tc.action.method) return tc;
 
-  // For literal extraction, always use the original LLD assertion text.
-  // The AI's argDescription may reword it (e.g. "string '042' with leading zero")
-  // losing the leading literal that IS the argument.
+  // For literal extraction, always use the original LLD assertion text. argDescription is a
+  // paraphrase carried over from the parsed condition (e.g. "string '042' with leading zero"),
+  // and paraphrasing can drop the leading literal that IS the argument.
   const literalResult = extractLeadingLiteral(tc.description);
 
   if (literalResult) {
@@ -43,13 +43,13 @@ async function synthesizeCase(tc: TestCase, modulePath: string): Promise<TestCas
       };
     }
 
-    // Literal found but assertion not inferable — at least provide the right arg
+    // Literal found but assertion not inferable -- at least provide the right arg
     return { ...tc, action: { ...tc.action, args } };
   }
 
   // ── Phase 2: Semantic vocabulary + AST types ───────────────────────────
-  // Use the AI's argDescription for semantic matching — it may have extracted
-  // richer semantic context than the raw assertion text.
+  // Prefer argDescription for semantic matching -- when the parser isolated a condition clause,
+  // it carries the semantic signal with less surrounding prose than the raw assertion text.
   const semanticDesc = tc.action.argDescription ?? tc.description;
   if (!hasSemanticSignal(semanticDesc)) return tc;
 

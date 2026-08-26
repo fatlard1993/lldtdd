@@ -1,8 +1,7 @@
 import { readFile, writeFile } from "fs/promises";
-import { resolve, dirname } from "path";
 import { existsSync } from "fs";
 import { parse } from "./parser.ts";
-import { getModuleExports, matchGroupToExport } from "./inference.ts";
+import { getModuleExports, matchGroupToExport, type ExecutionOptions } from "./inference.ts";
 
 export interface SuggestionGroup {
   name: string;
@@ -19,13 +18,14 @@ export interface SuggestResult {
   groups: SuggestionGroup[];
 }
 
-export async function suggestFile(filePath: string): Promise<SuggestResult> {
+/** `opts.execute` opts into loading the module for a complete export list. Off by default --
+ *  suggesting annotations for a document is a reading task. See ExecutionOptions. */
+export async function suggestFile(filePath: string, opts: ExecutionOptions = {}): Promise<SuggestResult> {
   const raw = await readFile(filePath, "utf-8");
-  const content = raw.replace(/ *-> */g, " → "); // normalize for parser
-  const doc = parse(content, filePath);
+  const doc = parse(raw, filePath);
 
   const moduleExists = existsSync(doc.module);
-  const exports = await getModuleExports(doc.module);
+  const exports = await getModuleExports(doc.module, opts);
 
   const groups: SuggestionGroup[] = [];
   const lines = raw.split("\n");
@@ -50,8 +50,8 @@ export async function suggestFile(filePath: string): Promise<SuggestResult> {
 }
 
 // Apply auto-applicable suggestions (exact + camel confidence) to the file
-export async function applyInferences(filePath: string): Promise<number> {
-  const result = await suggestFile(filePath);
+export async function applyInferences(filePath: string, opts: ExecutionOptions = {}): Promise<number> {
+  const result = await suggestFile(filePath, opts);
   let content = await readFile(filePath, "utf-8");
   const lines = content.split("\n");
   let applied = 0;

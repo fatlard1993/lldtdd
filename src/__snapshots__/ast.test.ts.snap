@@ -1,0 +1,402 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`deriveComponentInline matches: the disabled attribute is set on the element 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _inst = new _SubjectCtor({ disabled: true });
+expect((_inst.elem as any)?.disabled || _inst.elem?.hasAttribute("disabled")).toBe(true);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveComponentInline matches: changing position from top leaves only bottom class 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _a = new _SubjectCtor({ position: "valueA" });
+const _b = new _SubjectCtor({ position: "valueB" });
+expect(_a.elem?.className).not.toBe(_b.elem?.className);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveComponentInline matches: changing variant from a to b leaves only new class 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _a = new _SubjectCtor({ variant: "valueA" });
+const _b = new _SubjectCtor({ variant: "valueB" });
+expect(_a.elem?.className).not.toBe(_b.elem?.className);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveComponentInline matches: an invalid variant value throws 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": "expect(() => new _SubjectCtor({ variant: "__lld_invalid__" })).toThrow();",
+  "method": undefined,
+}
+`;
+
+exports[`deriveComponentInline matches: does a Whiteboard with lineWidth 10 have a higher blur than one with lineWidth 2 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _big   = new _SubjectCtor({ lineWidth: 10 });
+const _small = new _SubjectCtor({ lineWidth: 2 });
+expect(_big.blur).toBeGreaterThan(_small.blur);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveComponentInline matches: does a Link with variant 'button' remain an anchor element 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _inst = new _SubjectCtor({ variant: "button" });
+expect(_inst.elem?.tagName?.toLowerCase()).toBe("a");"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveComponentInline matches: does a readOnly Select contain no input element 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _inst = new _SubjectCtor({ readOnly: true });
+expect(_inst.elem?.querySelector("input")).toBeNull();"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveComponentInline matches: element had icon 'star' and was updated to 'heart' have only heart icon 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _inst = new _SubjectCtor({ icon: "star" });
+_inst.options.icon = "heart";
+expect(_inst.elem?.classList?.contains("fa-star")).toBe(false);
+expect(_inst.elem?.classList?.contains("fa-heart")).toBe(true);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveComponentInline matches: setting collapsed: true hides the panel 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _inst = new _SubjectCtor({ variant: "collapsible", collapsed: true });
+expect(_inst.elem?.classList?.contains("collapsed")).toBe(true);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveComponentInline matches: setting collapsed: false shows the panel 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _inst = new _SubjectCtor({ variant: "collapsible", collapsed: false });
+expect(_inst.elem?.classList?.contains("collapsed")).toBe(false);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveComponentInline matches: does setting openOnRender: false prevent the dialog from opening on its own 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _inst = new _SubjectCtor({ openOnRender: false });
+expect((_inst.elem as any)?.open).not.toBe(true);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveComponentInline matches: does a popover with autoOpen not open synchronously on construction 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _inst = new _SubjectCtor({ autoOpen: true });
+expect((_inst.elem as any)?.matches?.(":popover-open") ?? _inst.elem?.hasAttribute("open") ?? false).toBe(false);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveComponentInline matches: constructing an Elem with an \`id\` option set the underlying element's \`id\` property to that value 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _inst = new _SubjectCtor({ id: "__lld_probe__" });
+expect((_inst.elem as any)?.id).toBe("__lld_probe__");"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveComponentInline matches: completely unrelated claim with no match at all 1`] = `null`;
+
+exports[`deriveEventTargetInline matches: does a subscriber fire before the next line of code executes 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _ctx = new _SubjectCtor({});
+let _count = 0;
+_ctx.subscribe({ key: "x", callback: () => { _count++; } });
+_ctx["x"] = "test";
+expect(_count).toBe(1);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: does a subscriber for one key not fire when a different key changes 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _ctx = new _SubjectCtor({});
+let _count = 0;
+_ctx.subscribe({ key: "name", callback: () => { _count++; } });
+_ctx["other"] = "test";
+expect(_count).toBe(0);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: does the subscriber receive the new value as its argument 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _ctx = new _SubjectCtor({});
+let _received;
+_ctx.subscribe({ key: "x", callback: v => { _received = v; } });
+_ctx["x"] = "test";
+expect(_received).toBe("test");"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: does addEventListener work as a subscription path 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _ctx = new _SubjectCtor({});
+let _received;
+_ctx.addEventListener("x", ({ detail }) => { _received = detail; });
+_ctx["x"] = "test";
+expect(_received).toBe("test");"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: do subscriptions stop firing after destroy() 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _ctx = new _SubjectCtor({});
+let _count = 0;
+_ctx.subscribe({ key: "x", callback: () => { _count++; } });
+_ctx.destroy();
+_ctx["x"] = "test";
+expect(_count).toBe(0);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: does assigning the same value as the current one not call subscribers 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _ctx = new _SubjectCtor({});
+_ctx["x"] = "initial";
+let _count = 0;
+_ctx.subscribe({ key: "x", callback: () => { _count++; } });
+_ctx["x"] = "initial";
+expect(_count).toBe(0);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: does a listener added with \`{ once: true }\` fire only once 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _ctx = new _SubjectCtor({});
+let _count = 0;
+_ctx.addEventListener("x", () => { _count++; }, { once: true });
+_ctx["x"] = "a";
+_ctx["x"] = "b";
+expect(_count).toBe(1);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: does a listener added with \`{ signal }\` stop when the signal aborts 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _ctx = new _SubjectCtor({});
+const _controller = new AbortController();
+let _count = 0;
+_ctx.addEventListener("x", () => { _count++; }, { signal: _controller.signal });
+_ctx["x"] = "a";
+_controller.abort();
+_ctx["x"] = "b";
+expect(_count).toBe(1);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: does the subscriber receive the parser's output rather than the raw value 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _ctx = new _SubjectCtor({});
+let _received;
+_ctx.subscribe({ key: "x", callback: v => { _received = v; }, parser: v => v.toUpperCase() });
+_ctx["x"] = "test";
+expect(_received).toBe("TEST");"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: does a throwing parser not crash the application 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _ctx = new _SubjectCtor({});
+_ctx.subscribe({ key: "x", callback: () => {}, parser: () => { throw new Error("bad"); } });
+expect(() => { _ctx["x"] = "test"; }).not.toThrow();"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: does the subscription continue receiving updates after a parser error 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _ctx = new _SubjectCtor({});
+let _received;
+let _first = true;
+_ctx.subscribe({ key: "x", callback: v => { _received = v; }, parser: v => { if (_first) { _first = false; throw new Error("bad"); } return v; } });
+_ctx["x"] = "a";
+_ctx["x"] = "b";
+expect(_received).toBe("b");"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: does the callback fire when any listed key changes 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _ctx = new _SubjectCtor({});
+let _count = 0;
+_ctx.subscribe({ keys: ["a", "b"], callback: () => { _count++; } });
+_ctx["a"] = "1";
+expect(_count).toBeGreaterThan(0);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: does it receive a snapshot of all listed key values 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _ctx = new _SubjectCtor({});
+let _snapshot;
+_ctx.subscribe({ keys: ["a", "b"], callback: s => { _snapshot = s; } });
+_ctx["a"] = "1";
+expect(_snapshot).toHaveProperty("a");
+expect(_snapshot).toHaveProperty("b");"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: does it fire once when multiple listed keys change inside a batch 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _ctx = new _SubjectCtor({});
+let _count = 0;
+_ctx.subscribe({ keys: ["a", "b"], callback: () => { _count++; } });
+_ctx.batch(() => { _ctx["a"] = "1"; _ctx["b"] = "2"; });
+expect(_count).toBe(1);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: is isDestroyed true after destroy 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _ctx = new _SubjectCtor({});
+_ctx.destroy();
+expect(_ctx.isDestroyed).toBe(true);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: does calling destroy a second time not reactivate 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": 
+"const _ctx = new _SubjectCtor({});
+_ctx.destroy();
+_ctx.destroy();
+expect(_ctx.isDestroyed).toBe(true);"
+,
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: does constructing with null throw 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": "expect(() => new _SubjectCtor(null)).toThrow();",
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: does constructing with an array throw 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": "expect(() => new _SubjectCtor([])).toThrow();",
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: does constructing with a plain object succeed 1`] = `
+{
+  "callArgs": [],
+  "inspectCode": "expect(() => new _SubjectCtor({})).not.toThrow();",
+  "method": undefined,
+}
+`;
+
+exports[`deriveEventTargetInline matches: completely unrelated claim with no match at all 1`] = `null`;

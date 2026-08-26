@@ -8,6 +8,7 @@ export const __lld_api = `
   Then: await Subject.validateToken(token) -> { userId, role }
 `;
 
+// Demo value only -- never ship a hardcoded signing key. Real code loads it from config/env.
 const SECRET = "dev-secret";
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -100,3 +101,4 @@ export function _reset() {
     user.locked = false;
   }
 }
+

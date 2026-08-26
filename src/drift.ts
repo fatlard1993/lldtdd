@@ -10,7 +10,7 @@
 import { Project, SyntaxKind } from "ts-morph";
 import { readFile } from "fs/promises";
 import { existsSync } from "fs";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 
 // ── Signature extraction ──────────────────────────────────────────────
 
@@ -82,6 +82,20 @@ function extractAll(source: string, ext = "ts"): Record<string, FunctionSig> {
       sigs[v.getName()] = sigOf(init);
     }
   }
+  // Exported classes and their methods. Reading only free functions left the whole component / CLI /
+  // EventTarget family invisible to drift: those modules export a default class, so both signature
+  // maps came back empty and the reporter printed "signatures unchanged" over a comparison that
+  // inspected nothing. A default-exported class has no binding name, so it is keyed `default`; each
+  // method is keyed `Class.method` so a changed method surfaces under a name a claim can be matched to.
+  for (const cls of sf.getClasses()) {
+    if (!cls.isExported()) continue;
+    const cname = cls.getName() ?? (cls.isDefaultExport() ? "default" : "");
+    if (!cname) continue;
+    for (const m of cls.getMethods()) {
+      const mname = m.getName();
+      if (mname) sigs[`${cname}.${mname}`] = sigOf(m);
+    }
+  }
   return sigs;
 }
 
@@ -134,12 +148,12 @@ export function compareImplementations(
 
     const removedGuards = o.guards.filter(g => !n.guards.includes(g));
     removedGuards.forEach(g => {
-      diffs.push(`⚠  GUARD-REMOVED: if (${g}) — null/undefined check dropped`);
+      diffs.push(`⚠  GUARD-REMOVED: if (${g}) -- null/undefined check dropped`);
       risk = "high";
     });
 
     if (o.hasTryCatch && !n.hasTryCatch) {
-      diffs.push("⚠  TRY-CATCH-REMOVED — error handling dropped");
+      diffs.push("⚠  TRY-CATCH-REMOVED -- error handling dropped");
       risk = "high";
     }
 
@@ -164,9 +178,21 @@ export function compareImplementations(
 
 function sourceAtRef(ref: string, filePath: string): string | null {
   try {
-    const gitRoot = execSync("git rev-parse --show-toplevel 2>/dev/null", { encoding: "utf-8" }).trim();
+    // execFileSync (argv array, no shell) rather than execSync (shell string interpolation) --
+    // filePath ultimately comes from an .lld.md file's own `> module.js` pointer line, so a
+    // crafted module path must never be interpretable as shell syntax. `ref:rel` is passed as
+    // one literal argv element to git; shell metacharacters in it just make git fail to find
+    // the object (caught below, returns null) rather than executing anything.
+    // stderr is piped rather than inherited. A file that exists on disk but not at `ref` is an
+    // ordinary, expected state -- a module added since the last commit, or one outside the repo
+    // entirely -- and git narrates it with `fatal: path ... exists on disk, but not in 'HEAD'`.
+    // Inheriting stderr let that reach the terminal even under `silent: true`, which made a
+    // library caller's clean run look like something had gone wrong. The null return below is
+    // how "no previous version" is communicated; the message adds nothing to it.
+    const opts = { encoding: "utf-8" as const, stdio: ["ignore", "pipe", "pipe"] as ("ignore" | "pipe")[] };
+    const gitRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], opts).trim();
     const rel = filePath.replace(gitRoot + "/", "");
-    return execSync(`git show ${ref}:${rel} 2>/dev/null`, { encoding: "utf-8" });
+    return execFileSync("git", ["show", `${ref}:${rel}`], opts);
   } catch { return null; }
 }
 
@@ -220,6 +246,17 @@ export function compareSourcesForDrift(
   return { modulePath: "(inline)", changes, impacts, hasHighRisk: changes.some(c => c.risk === "high") };
 }
 
+/** Whether `modulePath` has a committed version at `baseRef` to compare against.
+ *
+ *  `detectDrift` returns null both when nothing drifted and when there was no baseline to drift
+ *  from -- a module never committed, or one outside any repo. The two are not the same fact:
+ *  "unchanged vs HEAD" is a verified green, "no baseline" is a check that never ran, and printing
+ *  the first for the second is exactly the pending-claim-wearing-a-green-badge this tool exists to
+ *  refuse. The reporter uses this to tell them apart. */
+export function hasDriftBaseline(modulePath: string, baseRef = "HEAD"): boolean {
+  return existsSync(modulePath) && sourceAtRef(baseRef, modulePath) !== null;
+}
+
 /** Git-aware: reads current file and compares against a ref. */
 export async function detectDrift(
   modulePath: string,
@@ -231,25 +268,9 @@ export async function detectDrift(
   const currentSource = await readFile(modulePath, "utf-8");
   const oldSource = sourceAtRef(baseRef, modulePath);
   if (!oldSource) return null;
-  if (currentSource === oldSource) return null; // content identical — skip ts-morph entirely
+  if (currentSource === oldSource) return null; // content identical -- skip ts-morph entirely
 
   const ext = modulePath.match(/\.(ts|tsx|js|jsx|mjs)$/)?.[1] ?? "ts";
   return compareSourcesForDrift(oldSource, currentSource, claims, ext);
 }
 
-// Zero-arg scenarios for testing drift behavior without git context.
-const _src1 = `export function fn(a: string) {}`;
-const _src2 = `export function fn(a: string, b: number) {}`;
-const _src3 = `export function fn(a: string) {} export function newFn() {}`;
-
-// Structural change: before has one param, after has two → CHANGED finding
-export const driftFromSourceChange = () =>
-  compareSourcesForDrift(_src1, _src2, ["does the parameter contract change?"]);
-
-// Added export: before has fn, after has fn + newFn → ADDED finding with no impacts
-export const driftFromSourceAddedExport = () =>
-  compareSourcesForDrift(_src1, _src3, ["existing claim about fn"]);
-
-// Identical sources: no drift
-export const driftFromUnchangedSource = () =>
-  compareSourcesForDrift(_src1, _src1);

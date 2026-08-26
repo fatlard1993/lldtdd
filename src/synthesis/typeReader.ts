@@ -91,7 +91,7 @@ function parseOneParam(p: string): ParamInfo | null {
   // Remove default value: "name = default" or "name: type = default"
   const noDefault = p.replace(/\s*=\s*.*$/, "").trim();
 
-  // Destructured param: ({ id, update }) — use a generic name
+  // Destructured param: ({ id, update }) -- use a generic name
   if (noDefault.startsWith("{") || noDefault.startsWith("[")) {
     const typeMatch = p.match(/\)\s*:\s*(.+)$/);
     return { name: "_args", type: typeMatch?.[1].trim() ?? "object", optional };

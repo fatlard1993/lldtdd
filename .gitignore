@@ -1,3 +1,9 @@
 node_modules/
-.lldtdd-cache.json
+.lldtdd-tmp/
+.lldtdd-mut-*
 .DS_Store
+
+# Written by the AI translator that used to live in src/translator/cache.ts. It held
+# model-generated executable code, so it must never be committed by anyone still carrying one
+# from an older checkout.
+.lldtdd-cache.json

@@ -1,31 +1,12 @@
 # lldtdd Grammar
 
-## What an LLD is
+The full assertion syntax: forms, outcome patterns, perspectives, and authoring guidance. For what an LLD is, why it exists, and what belongs in one, see [README.md](./README.md); this document assumes that and covers syntax only.
 
-An LLD (Low Level Design) document is a versioned design contract. It commits intent: "this is what this slice of the product should do." The test runner converts that intent into pass/fail, but the document's primary audience is the team and its primary artifact is its commit history.
-
-**The git log of an LLD file is the history of the product's design thinking for that slice.**
-
-When you change an LLD, you're committing a design decision — not fixing a test. The commit message should explain why the vision changed.
-
-### The lifecycle
-
-```
-commit LLD     ->  intent documented, implementation pending
-implement      ->  assertions go from pending to passing ("we arrived")
-assertion fails ->  implementation drifted from intent (regression)
-LLD changes    ->  vision evolved (log the why)
-```
-
-### What belongs in an LLD
-
-Three questions. If the answer to any is no, it's a unit test, not an LLD assertion.
-
-1. Does this assertion express a **decision** that shaped the design?
-2. Would a developer implementing naively **get this wrong**?
-3. Would a future developer reading only this file understand **what was chosen and what was rejected**?
-
-Assertions that describe the happy path, enumerate obvious I/O, or document what a function does rather than why it does it belong in the unit test suite. The LLD captures what was decided, not what was implemented.
+Writing your first document: [Document structure](#document-structure) for the skeleton,
+[Assertion forms](#assertion-forms) for how to write a claim, and
+[Deterministic outcome patterns](#deterministic-outcome-patterns) for what can go after the `->`.
+The rest is for when a claim you want is not turning green. `examples/auth.lld.md` in this repo is
+the shape to copy.
 
 ---
 
@@ -38,25 +19,45 @@ Assertions that describe the happy path, enumerate obvious I/O, or document what
 Prose description of the module's purpose and the key design intent.
 
 ## Group Name               <- behavioral category
-**method:** `methodName`    <- default callable for this group (optional — often inferred)
+**method:** `methodName`    <- default callable for this group (optional; see below)
 **setup:** `expr(args)`     <- runs in beforeEach, result bound as _subject (optional)
 **beforeAll:** `expr()`     <- runs once before the group, for expensive setup (optional)
 **beforeEach:** `expr()`    <- runs before each test, void call (optional)
-**context:** prose          <- human-readable context hint for the AI (optional)
 **module:** `path/to/alt.js` <- overrides the document-level module for this group only (optional)
+**mock-http:** `{ "json": "shape" }` <- wraps the group's tests in withMockFetch with this response body (optional)
 
 - assertion
 - assertion
   - perspective question?   <- indented sub-question; derives a focused verification test
 ```
 
-Most `**method:**` annotations are inferred automatically from the group name and claim vocabulary — you only need to write one when the group name doesn't clearly map to the intended method.
+`**beforeAll:**` and `**beforeEach:**` can also appear at document scope, before any `## ` heading -- they become the default for every group that doesn't set its own. `**companion:**` (a base-class module for `styled()`/`configured()` factories, imported as `_Companion`) is document-scoped only, not overridable per group; see "Automatic derivation from module structure" below.
+
+`**mutate:** false` is also document-scoped, and opts the document out of the mutation pass:
+
+```markdown
+# Module Name
+> src/orchestrator.ts
+
+**mutate:** false
+```
+
+Use it when the probe costs more than it tells you. The clearest case is a document whose claims
+each drive a whole pipeline -- mutating that module re-runs every claim once per mutant, and what
+the mutants flip is wiring the claims already exercise end-to-end. That is a judgment about this
+document, which is why it lives in the document rather than in a config file. `lldtdd run --no-mutate`
+still overrides it globally, and `lldtdd mutate <file>` run directly ignores it -- if you ask for
+mutation explicitly, you get it.
+
+Whether a group needs an explicit `**method:**` depends on what its module *is*, not on how the group is named. If the module matches one of the structural shapes in "Automatic derivation from module structure" below (an `EventTarget` subclass, a DOM component class, a class-based CLI parser, a caching-fetch client, a self-database module, a `createCRUD` schema, or a `derive()`/`styled()`/`configured()` factory), most claims resolve straight from vocabulary with zero annotation -- confirmed across this project's own example corpus, where every file of one of those shapes carries no `**method:**` at all. If the module is a plain function export with none of those shapes -- including lldtdd's own internals (`parser.ts`, `pipeline.ts`, `drift.ts`) -- the fallback is a conservative name-matching heuristic (`lldtdd suggest`) that guesses from the group heading against the module's exported function names, and it often can't: it returns nothing rather than guess wrong. For plain-function modules, expect to write `**method:**` explicitly on most groups. Run `lldtdd suggest <file>` any time you're unsure -- it reports exactly which groups it could and couldn't infer, before you commit to writing the annotation by hand.
+
+A `**method:**` annotation applies to the *whole group* uniformly -- every assertion and perspective under that heading resolves through the same call, not a call chosen per-claim. If a group states two or more genuinely different behaviors (e.g. "delete removes the record" and "delete with a destination moves it instead"), giving them one shared method produces identical passing test code for both, which proves nothing about the difference between them. Split them into separate `##` groups, each with its own method, instead.
 
 ---
 
 ## Assertion forms
 
-### Form 1 — Condition -> Outcome
+### Form 1: Condition -> Outcome
 ```
 [N x] condition -> outcome [// prose explanation]
 ```
@@ -64,14 +65,14 @@ Used when there is a clear cause-and-effect split.
 
 ```markdown
 - wrong credentials -> `AuthError`
-- 3 x request on same key -> denied
+- 3 x _subject("same-key") captures r -> r.allowed === false
 - getTotal("empty-sess") -> total is zero
 - read with unknown id -> false, not null
 ```
 
 The `[N x]` prefix runs the condition N times before the final assertion (sets up state).
 
-### Form 2 — Invariant (no arrow)
+### Form 2: Invariant (no arrow)
 ```
 [subject] statement [// prose explanation]
 ```
@@ -84,79 +85,215 @@ Used for universal properties, safety invariants, and ordering claims.
 - destruction is one-way // a destroyed context cannot be reactivated
 ```
 
-Full-text pattern matching fires on invariants when a `**method:**` annotation is present on the group. Recognized phrases:
+**An invariant on its own does not become a test.** These are design statements; the grammar has
+no way to check one without inventing a criterion the author never wrote. An invariant stays
+pending unless it carries a perspective or an inline call, or an AST pattern recognizes it.
+
+That was not always true, and the change is worth understanding. The phrases below used to map to
+a "the call did not throw" check whenever the group carried a `**method:**` -- so every claim in
+the example above reported as **passing** against an event bus whose `publish()` had been gutted
+to an empty body. A no-throw check is not a check of "subscribers fire synchronously"; it is a
+check of nothing in particular, wearing that claim's name.
+
+Some of these phrases still resolve to a concrete assertion, because the phrase itself names one:
 
 | Phrase pattern | Maps to |
 |---|---|
-| `X is safe`, `does nothing`, `does not throw`, `no error`, `is a valid state`, `not an error condition` | resolves |
-| `does not affect/fire/receive/create/store/...` | resolves |
-| `can [be] verb` | resolves (capability claim) |
-| `requires no X`, `there is no X required` | resolves (independence claim) |
 | `returns a function` | property: typeof-function |
 | `returns an object` | property: typeof-object |
-| `returns a list / array` | resolves |
 | `returns N`, `fires once`, `fires zero times` | equals N |
 | `output contains a sentinel/marker`, `includes a substring` | contains |
 | `field is absent/not present/not populated` | absent |
+| `a failed X does not stall/block/crash Y` | fault-resilience (needs a resolvable fault target) |
+| `only declared fields survive`, `undeclared fields are dropped` | schema-drop |
 
-### Form 3 — Inline call with captures
-```
-method(args) captures varName -> inspect assertion
-method1(args) captures varA and method2(args) captures varB -> inspect assertion
-method1(args) captures varA then method2(args_referencing_varA) captures varB -> inspect assertion
+These no longer resolve on their own, because no-throw was the only thing they ever produced --
+`X is safe`, `does nothing`, `does not throw`, `no error`, `is a valid state`, `does not
+affect/fire/receive/create/store/…`, `can [be] verb`, `requires no X`, `need not`, `is
+structural`, `returns a list/array`. Write the invariant as prose (that is what it is for) and
+hang the check off it:
+
+```markdown
+- publishing to an unsubscribed topic does nothing // no error, no effect
+  - publish("nobody-listening", { id: 1 }) -> resolves
 ```
 
-The `then` keyword signals that the second call's args may reference the first capture by name. The first result is in scope when the second call is emitted:
+An explicit `-> resolves` is still a no-throw check, and that is fine: there the author chose it,
+and the call named the condition it is a check of. The difference is who decided.
+
+A claim whose only assertion is no-throw reports as **`◐ shallow`**, not `✓ passing` -- a real green
+(the call ran) held apart from a claim that also checked what the call returned or did, because a
+no-throw-only claim stays green against a gutted implementation. It is not an error: `run` exits 0
+and a document may legitimately mean only "this runs." `lint` names it, and `run --fail-on-weak`
+fails on it, for a corpus that wants every green to check a behavior. To strengthen one, give it a
+perspective that asserts the result (`-> resolves with \`{ ok: true }\``, a captured value, a spy).
+
+### Form 3: Inline call with captures
+
+A chain of one or more calls, each binding its own capture, joined by `and` or `then`:
+
+```
+method(args) captures varName -> assertion
+method1(args) captures varA and method2(args) captures varB -> assertion
+method1(args) captures varA then method2(args) captures varB then method3(args) captures varC -> assertion
+```
+
+There is no limit on chain length. `and` and `then` mean the same thing to the parser -- pick
+whichever reads correctly -- and every capture is in scope by the time the next call is emitted,
+so a later call can reference an earlier result by name:
 
 ```markdown
 - create({ name: "Original", url: "x" }) captures r then update({ id: r.id, update: { name: "Renamed" } }) captures result → result.name === "Renamed"
 - create({}) captures r then read({ id: r.id }) captures found → found.name === ""
-```
-
-Generated code holds `r` in scope before calling `update`, so `r.id` resolves correctly.
-
-```markdown
 - login("user@example.com", "password123") captures result -> result.token does not contain "password123"
 - login("a@b.com", "p1") captures tokenA and login("b@b.com", "p2") captures tokenB -> tokenA.token !== tokenB.token
 ```
 
-### Form 4 — Conditional invariant
-```
-when [field] is set, [output] is [property]
-```
-
-Describes field-controlled output transformation. The runner detects the field name and behavior, derives appropriate test data, and verifies the transformation automatically.
+**Calls run in the order written**, which is why chain length matters: for a whole class of claim
+the ordering *is* the design decision, and it takes as many steps as it takes to set up. Three
+calls is the shape of most "one participant misbehaves, the others carry on" claims:
 
 ```markdown
-- when orderBy is set, results are sorted server-side before being returned
-- when limit is set, results are truncated to that count
+- a throwing handler does not prevent subsequent handlers from running
+  - subscribe("orders", thrower) captures u1 then subscribe("orders", spy) captures u2 then publish("orders", { id: 1 }) captures sent -> spy called
 ```
 
-These require a schema with the named field and a detected primary action (e.g. a search function). The runner creates the entity with the field set, mocks the external dependency with controlled data, and asserts the transformation.
+That claim is only distinguishable from its neighbour ("a throwing handler's error does not
+propagate to the publisher") by a bus that both swallows the error *and* keeps looping -- a
+two-call chain cannot separate them, and an implementation that swallowed the error but stopped
+the loop would satisfy the shorter form.
+
+Every step must bind a capture. A chain with a step that doesn't (`a(1) captures x then b(2)`) is
+not treated as a partial chain -- deriving from the readable prefix would check something narrower
+than the claim states -- so the condition falls back to non-chain handling, which usually means
+pending.
+
+After a chain, the available outcomes are the inspect assertions below, the spy outcomes in Form
+3b, and `-> resolves`. `-> throws` is not among them: a claim cannot both capture a call's result
+and expect that call to throw.
+
+### Arguments that have to be computed
+
+Most arguments are literals. Four forms are passed through as code instead: an object or array
+literal, `new X(...)`, a bare or dotted identifier (which is how a chain references an earlier
+capture), and **any argument that opens with `(`**:
+
+```markdown
+- searchProvider((await Subject.create({ label: "L", url: "https://x/?q=:term" })).id, "x") captures r -> r.length === 2
+```
+
+Use it when the value cannot be written down because it does not exist until the test runs -- a
+generated id being the usual case. `Subject` and any group-`**module:**` alias are both in scope,
+so this is also how a claim reaches a second module: create through one, call through the other.
+
+Everything else is a string, including unquoted prose, which is what lets a claim name a condition
+it has not made concrete yet (`addItem(a valid session)`). That is why the leading parenthesis is
+required rather than inferred: prose does not open with one. An argument whose brackets do not
+close stays a string too, rather than becoming a fragment that cannot compile.
+
+### Form 3b: Callback handlers: `spy` and `thrower`
+
+A claim about a callback API has to name the handler it registers. Two reserved identifiers can
+appear anywhere an argument can, and only these two carry behavior the runner supplies:
+
+| identifier | is | ask about it with |
+|---|---|---|
+| `spy` | a recording no-op | `-> spy called` / `called once` / `called with ...` / `not called` |
+| `thrower` | a handler that throws | usually paired with `-> resolves` on the publisher |
+
+Because a chain runs its calls in the order written, the *ordering* can be the claim:
+
+```markdown
+- subscribing after a publish does not receive that event
+  - publish("orders", { id: 1 }) captures sent then subscribe("orders", spy) captures unsub -> spy not called
+- a throwing handler's error does not propagate to the publisher
+  - subscribe("orders", thrower) captures unsub then publish("orders", { id: 1 }) captures sent -> resolves
+- a throwing handler does not prevent subsequent handlers from running
+  - subscribe("orders", thrower) captures u1 then subscribe("orders", spy) captures u2 then publish("orders", { id: 1 }) captures sent -> spy called
+```
+
+Both handlers can appear in one chain, in the order they are registered -- which is what makes the
+last claim checkable at all.
+
+When a claim registers `spy` itself, the runner asserts on it directly and does **not** insert a
+subscribe of its own -- otherwise it would silently reorder the very sequence being claimed. When
+a claim uses a spy outcome *without* naming `spy`, the runner subscribes one for you, reading
+`subscribe.length` off the implementation to decide between `subscribe(handler)` and
+`subscribe(topic, handler)`; a topic-keyed API gets the call's first argument as its topic.
 
 ---
 
 ## Perspectives
 
-A perspective is an indented question under an assertion. It derives a focused verification test for a specific aspect of the parent claim.
+A perspective is an indented bullet under a claim. The claim states the design decision; the
+perspective is the concrete, checkable form of it. Most verification in a mature document lives here,
+not in the claims.
 
 ```markdown
 - a bookmark belongs to at most one category
   - does the category field hold a string value?
-- categories are a flat collection
-  - does readCategories return an array?
-- write ordering is structural, not a mutex
-  - do concurrent writes complete in the order they were submitted?
 ```
 
-The parent assertion documents the design decision. The perspective question proves a concrete, measurable aspect of it. Perspectives run as sibling tests immediately after their parent.
+**A perspective attaches to the bullet immediately above it.** This is the single easiest thing to get
+wrong, and it fails silently: the perspective still runs, still passes, and verifies the wrong claim.
+It happens when a rationale bullet sits between a claim and its perspective --
 
-Use perspectives when:
-- the parent claim is abstract but one specific property is measurable
-- you want to add targeted verification without changing the design statement
-- mutation testing identifies a gap — adding a perspective is how you close it
+```markdown
+- only one position class is active at a time; switching position replaces      <- the claim
+- callers can safely reassign position without manual cleanup                   <- rationale
+  - does changing position leave only the new class active?                     <- binds to the rationale
+```
 
----
+The check above proves the first bullet and is filed under the second, so the claim it verifies still
+reads as pending. Keep rationale in the section prose and bullets for claims, and the problem cannot
+arise. Four documents in one corpus had this, every one of them invisible until the structure was
+inspected directly.
+
+### Two forms
+
+A perspective is either an English question, which derives if a pattern recognises it, or a concrete
+call, which needs no pattern at all:
+
+```markdown
+- `readOnly: true` omits the input and add button entirely
+  - does a readOnly TagList contain no input element?                    <- derived
+
+- clicking a column header updates `sortProperty` and `sortDirection`
+  - new Subject({ columns: [{ key: "name", sort: true }], data: [{ name: "b" }] }) captures t
+    then t.elem.querySelector("th").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }))
+    -> t.options.sortProperty === "name"                                 <- concrete
+```
+
+Reach for the question form first: it is shorter, it reads as design, and it costs nothing if a
+pattern already covers the shape. Reach for the concrete form when the claim is about *intent* --
+priority ordering, cleanup replacing rather than accumulating, a gesture threshold. Intent is not in
+the source, so no amount of derivation will find it, and a claim like that stays pending forever
+unless somebody writes down what it means.
+
+One perspective per claim is the common case, but write as many as the claim has separable halves. A
+claim with two directions ("blocked when read-only, preserved when it was already drawn") wants both,
+because either alone passes against a component that does nothing at all.
+
+### A perspective can set up its own state
+
+Derived patterns construct the component and drive it; they cannot know that a sheet must be shown
+before a drag can dismiss it. A concrete perspective simply says so:
+
+```markdown
+- dragging past a distance threshold triggers `hide()`
+  - new Subject({ appendTo: document.body }) captures s then s.show() then ... -> ...
+```
+
+That is why "this claim needs a starting-state mechanism" is usually wrong. It is true of the pattern
+path and false of the perspective path.
+
+### Vocabulary comes from the claim above
+
+A perspective is written as a follow-on and inherits the claim's nouns -- "does the Tooltip component
+exist after construction?" names no member because the claim above already said "it exists as
+`this._tooltip`". Patterns read the parent for exactly this. What gets *asserted* still comes from the
+perspective; the parent only supplies vocabulary, so a parent mentioning a delay cannot retarget a
+child asking about existence.
 
 ## Prose separator
 
@@ -167,7 +304,7 @@ Use ` // ` (space-double-slash-space) to append an explanation to any assertion.
 - unrecognized input returns itself, not null // callers can distinguish unrecognized from absent
 ```
 
-The text after ` // ` is stripped before matching — it is for the reader, not the runner.
+The text after ` // ` is stripped before matching: it is for the reader, not the runner.
 
 **Why ` // `**: space-double-slash-space never conflicts with URL paths (`https://` has no leading space), flag names (`--no-flag`), or any other content likely to appear in an LLD.
 
@@ -175,15 +312,19 @@ The text after ` // ` is stripped before matching — it is for the reader, not 
 
 ## Deterministic outcome patterns
 
-When the outcome (right side of `->`) matches one of these patterns, no AI translation is needed.
+When the outcome (right side of `->`) matches one of these patterns, the test is derived directly
+from the rule; no inspection of the implementation is needed.
+
+Every rule in this file is offline and reproducible. A claim either matches something documented
+here or an AST pattern in the implementation, or it stays pending; nothing is guessed at, and the
+same document always derives the same suite. If a claim you care about is pending, this file is
+the list of shapes that would make it concrete.
 
 ### Error throws
 ```
 -> `ErrorClass`
 -> `ErrorClass("message")`
 -> throws
--> account locked
--> rate limited
 ```
 
 ### Value equality
@@ -193,19 +334,21 @@ When the outcome (right side of `->`) matches one of these patterns, no AI trans
 -> null
 -> undefined
 -> zero  /  0
--> allowed         (property: result.allowed === true)
--> denied          (property: result.allowed === false)
 ```
+
+To assert on a property, capture the result and name it: `call(...) captures r -> r.allowed === true`.
+Three entries used to live here instead -- `allowed`, `denied`, and the literal phrases
+`account locked` / `rate limited` -- and they were removed for the reason the removed pattern
+catalog was: they read nothing out of the claim. `allowed` hard-coded the property name
+`result.allowed`, so it worked for one example module and silently went pending for every other,
+and reworded prose lost its test while still reading as verified. A captured property check says
+which property, on which call, and generalizes to any module.
 
 ### Resolves (no throw)
 ```
 -> resolves
 -> no error
 -> returns
--> allowed again
--> unchanged
--> without error
--> without failing
 ```
 
 ### Shape
@@ -214,7 +357,7 @@ When the outcome (right side of `->`) matches one of these patterns, no AI trans
 -> resolves with `{ ... }`
 ```
 
-### Spy / callback assertions (requires **setup:** with _subject)
+### Spy / callback assertions (needs a **setup:** with `_subject`, or a claim that names `spy` in its own call)
 ```
 -> handler called
 -> handler called once / twice / N times
@@ -281,7 +424,7 @@ When an assertion implies a specific test input that can't be synthesized from t
 - login("user@example.com", "wrongpass") -> `AuthError`             <- execution evidence
 ```
 
-The design assertion documents the decision. The inline call proves it holds against the actual implementation. They are not redundant — the first says WHY, the second verifies it.
+The design assertion documents the decision. The inline call proves it holds against the actual implementation. They are not redundant: the first says WHY, the second verifies it.
 
 ---
 
@@ -322,7 +465,7 @@ Then in the LLD:
 ## Query strings are stripped before route matching
 **method:** `hashStripsQueryString`
 
-- `#/path?foo=bar` matches the `/path` route — query strings are stripped before matching
+- `#/path?foo=bar` matches the `/path` route: query strings are stripped before matching
   - hashStripsQueryString() → "/path"
 ```
 
@@ -335,7 +478,11 @@ This pattern is particularly useful for:
 
 ## Automatic derivation from module structure
 
-lldtdd derives tests directly from source code structure without requiring any annotation for several common module types.
+lldtdd derives tests directly from source code structure without requiring any annotation for several common module types. Every pattern that does this is **structural**: gated on the module's actual shape (e.g. "exports a default class extending `EventTarget`"), and matched against claim text via phrase *families* with capture groups rather than fixed sentences. They work for a brand-new module of the matching shape and a claim that has never been written before, as long as it uses the vocabulary family. EventTarget, class-based CLI parsers, DOM components, caching-fetch clients, and `createCRUD` schemas all work this way.
+
+The membership rule is mechanical, not a judgment call: a pattern must be **gated on the module's real shape** and **keyed on a vocabulary family, never on one hand-transcribed sentence.** Most read capture groups and build the test around what they captured, so they adapt to a claim never written before. A few target a fixed module contract whose invariants have no value to lift from the claim (the `styled()` and `derive()` factories below); those emit the contract's test but still trigger on phrase-fragments, so rewording within the vocabulary still derives it. What does not belong is a pattern keyed to the exact wording of one claim -- that is a lookup table from a sentence to a hand-written body, not derivation.
+
+If you write a claim against a module in one of the shapes below and it doesn't resolve, check with `lldtdd run --verbose` or `lldtdd suggest`, and reach for `**method:**` or a perspective rather than assuming the shape isn't recognized at all.
 
 ### EventTarget reactive classes
 
@@ -354,138 +501,308 @@ When a module exports `export default class X extends EventTarget`, lldtdd autom
 | "constructor rejects null / array" | throw test: `expect(() => new X(null)).toThrow()` |
 | "constructor accepts plain object / succeeds" | resolves test: `expect(() => new X({})).not.toThrow()` |
 
+Fully generalized: any module of this shape, any claim using this vocabulary, no `**method:**` needed. (Constructor-throw/resolves tests fire for any constructible default export, not just `EventTarget` subclasses specifically.)
+
 ### Component UI classes
 
-When a module exports `export default class X extends Y` (non-EventTarget), lldtdd derives tests from these vocabulary patterns:
+When a module exports `export default class X extends Y` (non-EventTarget), lldtdd derives tests from
+the vocabulary families below. Every one of them is **structural**: it reads its values out of the
+claim text or out of the module's own declarations, so it fires for a component and an option name it
+has never seen. There is no per-project catalog and no named fixtures: that mechanism was removed,
+and with it the ability to register a hand-written body for one specific sentence.
 
-**Reactive state properties**
+Several families need to construct the component the way its author intended, and they read that from
+the module: a `static schema`, JSDoc `@param` lines, or a TypeScript `options` type. If the module
+declares an option they cannot type and does not mark it optional, they decline rather than guess --
+constructing with a wrong value throws inside the component and reports a correct implementation as
+broken. `--verbose` says which claims resolved and which did not.
+
+**Construction and instance state**
 | Claim vocabulary | Derived test |
 |---|---|
-| "isDirty false / matches initial value" | `new X({ value: 'init' }); expect(inst.isDirty).toBe(false)` |
-| "isDirty true / after value changed" | set `inst.options.value = 'new'`; check `isDirty === true` |
-| "hasErrors returns false / all valid" | `new Form({ inputs: [] }).hasErrors()` → false |
-| "hasErrors returns true / validation fails" | `new Form({ inputs: [{ key: 'x', validations: [[fn, 'msg']] }] }).hasErrors()` → true |
-| "disabled / element is disabled" | `new X({ disabled: true })` → `elem.disabled === true` |
+| "does `isDirty` return false when the value matches the initial value" | `new X({})` then `expect(inst.isDirty).toBe(false)`. Fresh-instance conditions only -- a claim about state *after a change* is declined, because construction cannot produce it |
+| "does a X have `isReady` / `reset()`" | `expect(inst).toHaveProperty(...)` |
+| "the `disabled` attribute is set on the element" | `new X({ disabled: true })` → `elem.disabled \|\| elem.hasAttribute("disabled")`. The attribute name is captured, so any boolean HTML attribute works |
+| "constructing an Elem with an `id` option sets the element's `id` property" | option name captured, asserted on the element |
+| "an invalid `variant` value throws" / "there are N valid `variant` values; anything else throws" | `expect(() => new X({ variant: "__lld_invalid__" })).toThrow()` |
+| "does a Link with `variant: 'button'` remain an anchor element" | asserts `tagName` after construction |
+| "does a readOnly Select contain no input element" | `new X({ readOnly: true })`; asserts the named element is absent |
+| "does a X with `lineWidth` 10 have a higher `blur` than one with `lineWidth` 2" | builds both and compares the named property |
 
-**Construction assertions**
+**What construction renders**
+
+Each of these reads its target out of the claim. Where a claim leaves the target to the reader -- "an
+identifiable class", "renders inline" -- it stays pending rather than having one guessed for it.
+
 | Claim vocabulary | Derived test |
 |---|---|
-| "invalid X throws / unrecognized X throws" | `expect(() => new X({ X: '__lld_invalid__' })).toThrow()` |
-| "renders without error / without failing" | `expect(() => new X({})).not.toThrow()` |
-| "readOnly contains no input element" | `new X({ readOnly: true }); querySelector('input') === null` |
-| "boolean value → checkbox" | `new X({ value: true }); elem.type === 'checkbox'` |
-| "number value → numeric entry" | `new X({ value: 1 }); elem.type === 'number'` |
-| "code with newlines → block (pre)" | `new X({ code: 'a\nb' }); elem.tagName === 'PRE'` |
-| "language option adds identifiable class" | `new X({ language: 'js' }); class contains 'language-'` |
-| "full-height flex / height: 100%" | `new X({}); elem.style.height === '100%'` |
-| "remain an anchor element" | `new X({ variant: 'button' }); elem.tagName === 'A'` |
-| "icon without text → icon-only class" | `new X({ icon: 'star' }); classList.contains('icon')` |
-| "icon with text → no icon-only class" | `new X({ icon: 'star', textContent: 'text' }); !classList.contains('icon')` |
-| "both icon and animation → both classes" | `new X({ icon: 'star', animation: 'spin' }); has both FA classes` |
-| "icon updated → no stale classes" | `inst.options.icon = 'moon'`; no `fa-star`, yes `fa-moon` |
+| "does a Page element have `height: 100%` applied at construction" | asserts `elem.style.height`; property and value both come from the claim |
+| "does each radio input in the group share the same `name` attribute" | fills the module's list option with two entries, requires two elements back, and asserts the attribute is shared *and* non-empty |
+| "does a List render a mix of string and object items without failing" | builds the module's one list option with a string and an object, asserts no throw. Declines when the module declares more than one list, since the claim gives no way to choose |
+| "does code with newlines render as a block (`pre`)" | sets the named option to multi-line content, asserts `tagName` |
+| "does the `language` option add an identifiable class" | needs the claim above it to spell out the template -- "adds a `language-{name}` class" -- and substitutes the option's declared value |
 
-**Event dispatch**
+**Options changing what is rendered**
 | Claim vocabulary | Derived test |
 |---|---|
-| "pressing Enter invokes Y" | `elem.dispatchEvent(KeyboardEvent('keyup', { key: 'Enter', code: 'Enter' }))`; spy on Y |
-| "clicking invokes Y" | `elem.dispatchEvent(PointerEvent('pointerdown' + 'pointerup'))`; spy on Y |
-| "clicking removes it from the page" | `elem.dispatchEvent(pointerdown + pointerup)`; `document.body.contains(elem) === false` |
+| "changing `position` from top leaves only the new class" | asserts the old class is gone and the new one present |
+| "setting `collapsed: true` hides the panel" / "setting `openOnRender: false` prevents ..." | option set, effect asserted |
+| "does updating the `label` option change the label's content without replacing its structure" | compares the subtree across the assignment |
+| "does calling `render()` twice leave exactly one copy" | compares child count across a second call |
 
-**Timer mechanism (setTimeout spy)**
+**Driven in a real DOM** (mounted, with the clock under test control)
 | Claim vocabulary | Derived test |
 |---|---|
-| "hovering for longer than Nms shows the tooltip" | mock setTimeout, dispatch pointerover, verify timer registered with delay ≥ 600ms |
-| "leaving prevents tooltip from appearing" | mock clearTimeout, dispatch pointerover then pointerout, verify timer cleared |
-| "cancelling before 200ms prevents opening" | append to DOM (fires onConnected), destroy, verify clearTimeout called |
-| "manually dismissing cancels pending timeout" | dismiss notification, verify clearTimeout called |
+| "`autoOpen: true` queues `show()` after 200ms" | watches `show`, asserts not called at 199ms and called at 200ms |
+| "does hovering for longer than 700ms show the tooltip" | hovers, compares rendered output across the threshold |
+| "does leaving before 700ms prevent the tooltip from appearing" | hovers, leaves early, waits past the deadline, then compares against the same instance allowed to show |
+| "does clicking a menu item invoke `onSelect`" / "pressing Enter on a focused item" / "hovering" / "typing" | constructs with the callback, drives the real event sequence, asserts it fired |
+| "does calling `hide()` invoke the `onClose` callback" | same, with a method call as the trigger |
+| "does destroying the wrapper also remove the tooltip from the DOM" | asserts nothing the component rendered is still connected |
 
-**Reactive option updates**
+**Reading the claim above**
+
+A perspective inherits vocabulary from the claim it hangs under, and a few families read it. "Does the
+Tooltip component exist after construction?" names no member; the claim above it says "it exists as
+`this._tooltip`", and that is where the member comes from. Context only -- what gets asserted always
+comes from the perspective itself. A perspective whose parent does not spell out the identifier stays
+pending rather than guessing at it.
+
+### Claims that need a real browser
+
+A few design decisions are about *layout* -- a textarea growing to fit its content, a popover flipping
+at a viewport edge, two elements sitting side by side. happy-dom computes no layout, so it reports 0
+for every measurement, and those claims cannot be answered there at any effort.
+
+Mark the group and its scenarios run in headless Chrome instead:
+
+```markdown
+## Textarea height follows content automatically
+
+**browser:** true
+
+- when `tag: 'textarea'`, the element resizes to fit its content without the caller managing height
+  - new Subject({ tag: "textarea", appendTo: document.body }) captures i then i.elem.offsetHeight captures before then i.elem.value = "a\nb\nc" then i.elem.dispatchEvent(new Event("input", { bubbles: true })) then await new Promise(r => setTimeout(r, 60)) -> i.elem.offsetHeight > before
+```
+
+The module is bundled and loaded into a real page, with its default export bound to `Subject`, so the
+claim runs against the same code every other claim runs against. Chrome is driven over the DevTools
+Protocol directly -- there is no Playwright or Puppeteer dependency, and no browser download. It is
+found on `PATH`; if there is no browser, those claims stay **pending**, because the question was never
+put to anything.
+
+Marking is per group and is not inherited: a browser costs seconds, so it applies only where asked.
+
+**What does not derive**
+
+These are worth stating plainly, because a claim that looks like the ones above but names a
+consequence only the component can define will stay pending no matter how it is worded:
+
+- effects that need the component's own semantics -- "does clicking a sortable column update
+  `sortProperty` to that column's key", colour-space maths, canvas pixel state, calendar layout
+- gestures: nothing yet drives a drag, so drag-threshold claims stay pending
+- navigation: no hashchange or route driving
+- ordering between two effects: "does the sheet animate out *before* calling `onClose`"
+
+For any of these, write a perspective carrying a concrete call. That is the intended answer, not a
+fallback: a perspective lives in the document where a reader auditing the design can see it, it is
+keyed by position rather than by a fuzzy regex over English, and rewording the claim above it cannot
+silently unanchor it.
+
+### Class-based CLI parsers
+
+When a module exports `export default class X` that assigns `this.options = ...` in its constructor, lldtdd derives tests for the command/flag/tail argument model directly from claim vocabulary, no `**method:**` annotation needed:
+
 | Claim vocabulary | Derived test |
 |---|---|
-| "switching layout removes keys / new layout keys appear" | `inst.options.layout = 'number'`; compare DOM before/after |
-| "switching from month to day view reflects events" | `inst.options.view = 'day'`; `inst.render()`; DOM changed |
+| "declared command consumes the first word" | `argv: ["build", "--flag", "val"]`; `_a.command === "build"` |
+| "command word precedes flag resolution" | same argv; `_a.options.flag === "val"` |
+| "tail argument captures its slot after all flags are consumed" | `argv: ["--flag", "val", "target"]` with a `tail` config; `_a.options.target === "target"` |
+| "spanning all three categories" (command + flag + tail together) | one argv exercising all three; asserts all three |
+| "does not appear in the options object" / "no default, absent when not provided" | unset flag; `_a.options.flag === undefined` |
+| "zero exit code" (`--version`/`--help`/`-h`) | parse, catch, assert exit code `0` |
+| "non-zero exit code" | parse an unknown flag, catch, assert exit code `1` |
+| "registered in every schema by default" + "disabled or replaced" | `--help` with `defaults: { config: { help: false } }`; expect throw |
+| "parse: false runs option registration immediately" | construct with `parse: false`; assert `flagNames`/`requiredOptions` populated before `.parse()` runs |
+| "flag-like string after `--` remains unparsed" | `argv: ["--", "--flag"]`; flag absent, `passThrough` contains it |
+| "flag before `--` still parses correctly" | `argv: ["--flag", "val", "--", "extra"]`; flag still resolves |
+
+A second, complementary path resolves `result.FIELD === VALUE` / `result.FIELD → absent` / throw assertions against a synthetic `__lld_api` description (usually auto-generated from the module's TypeScript types) -- this is what lets a bare `**method:**` group with no other annotation derive real `process.argv` + parse-and-assert code for arbitrary flag names, types (boolean, integer, alias, negation, `--flag=value`, pass-through), matched to the field's declared type rather than a hardcoded example.
+
+Fully generalized: any class-based parser of this shape, any claim in this vocabulary. One ordering caution if you're editing the derivation itself: "non-zero exit code" must be checked before "zero exit code" -- a looser zero-exit check placed first will silently swallow a non-zero-exit claim. This has already caused one regression (a non-zero-exit claim in a real consuming project's docs briefly resolving through the wrong branch).
+
+### Text transformers, pipeline chains, and structural comparators
+
+One family covers modules whose exported plain functions form a processing pipeline. Every
+vocabulary in it is gated on facts read from the module's own signatures, so it fires for
+functions it has never seen and declines, leaving the claim pending, when the shape is absent:
+
+- **Text transformers** are exported `(string, ...) → object` functions in a module that
+  demonstrably parses a structured text format. Detection requires format-token evidence in the
+  source (short `.startsWith("# ")`-style markers), and the synthetic valid input for the derived
+  call is built from those very tokens. The token gate is load-bearing: string-in, object-out is
+  one of the most common signatures there is, and without the gate a drift comparator taking a
+  `beforeSource: string` was once misclassified as a text parser.
+- **Pipeline chains** are detected when one exported function's return type is another exported
+  function's first-parameter type (`Promise<T>` unwraps, and `export { X } from "Y"` re-exports
+  are followed). A claim about a late stage then derives its whole setup: each predecessor runs in
+  order, with a text transformer at the root producing the first input.
+- **Structural comparators** are exported `(T, T) → changes[]` functions where both parameters
+  share a `Record<string, Interface>` type. Before/after snapshots are synthesized from the
+  interface's own declared properties, one scenario per drift kind (a parameter added, nothing
+  changed, an export removed, an export renamed, and guard or try/catch removal where the
+  interface declares those fields).
+
+| Claim vocabulary | Derived test |
+|---|---|
+| "pipeline stage ... calls X" (needs a detected chain ending at X) | runs every predecessor stage in order, feeding the root a synthetic structured-text input, then calls X with the last output and asserts a defined result with populated groups |
+| "text transformer parses structured text input into a document object" | calls the detected transformer with the synthetic input built from the module's own format tokens; asserts a document whose `groups` are populated |
+| "code processor processes source code input and returns an array" | same call shape, for a transformer whose declared return type is an array; asserts a non-empty array |
+| "structural comparator ... calls X" | synthesizes before/after snapshots from the shared interface and calls X; "identical" / "no change" / "unchanged" wording asserts an empty changes array, anything else asserts a non-empty one |
+
+Four further scenarios in this family exercise a class-based CLI parser's transform machinery,
+and they gate exactly as the CLI family above does: on a constructible default export that
+declares `parse()`. The gate exists because these scenarios are reachable from raw claim prose,
+and without it a value-mapper module with a claim about a "replaceable transform map" derived a
+CLI parser test and reported the claim as failing for a premise the author never wrote.
+`src/family-coverage.test.ts` pins that such a module now declines and the claims stay pending.
+
+| Claim vocabulary | Derived test |
+|---|---|
+| "transform map is replaceable" / "replacing string transform" | constructs the parser with a replaced string transform and asserts a flag value passed through it |
+| "per-flag transform replaces" / "flag-level transform overrides" | a flag-level `transform` overrides the built-in type coercion; asserts the transformed value |
+| "custom test receives coerced value" / "parse fails on invalid value" | a flag `test` that rejects its value makes `parse()` throw |
+| "rest tail captures" / "remaining tokens ... array" | a `rest: true` tail collects the remaining tokens into an array |
+
+### CRUD entities
+
+When a module exports (or re-exports) an entity built with `createCRUD(name, fields)`, lldtdd derives tests from schema shape and claim vocabulary:
+
+| Claim vocabulary | Derived test |
+|---|---|
+| "a name and X are the only required fields" / "create with required fields" | minimal `create()` call using just the required fields, asserts it resolves |
+| "only declared fields survive a write" | write extra undeclared fields, read back, assert they're absent |
+| "missing fields default to empty string, not null" | write with a field omitted, read back, assert `""` not `null` |
+| "deleting a category removes or reassigns its bookmarks -- no bookmark is left orphaned" | derived from `AstFacts.foreignKeys` -- create parent + dependent, delete parent, assert dependent is gone |
+| "if a destination category is provided, affected bookmarks are moved to it" | same FK derivation, with a destination argument -- assert the dependent's FK now points at the destination |
+| "a snapshot is taken before the operation; any failure mid-loop restores them" | same FK derivation, with a forced mid-loop failure -- assert original records are restored |
+| "creating two entities produces an array" / "categories are a flat collection" | create two records, call the read-all method, assert an array of length ≥ 2 |
+| "changing one entity's category affects only that entity" | create two records sharing a context, mutate one, assert the other is unchanged |
+
+The FK-derived patterns (orphan-delete, move-delete, snapshot-restore) read `AstFacts.foreignKeys` directly from the module's exports -- they aren't hardcoded to `bookmarks`/`categories` specifically, so they generalize to any CRUD entity with a detected foreign-key relationship. The self-database claims (write-queue ordering, fault recovery) match on short phrase-fragments (`order`/`structural`, `fail`/`recover`) rather than one exact sentence, and are gated on `facts.isSelfDatabase` -- a module with an `init`, a `write()` and a `db`, and no imported database. The queue itself is detected by shape (a property seeded with `Promise.resolve()` and reassigned from itself), not by being named `_writeQueue`; `lld/fixtures/selfdb.ts` is a synthetic module that pins that.
+
+A third claim in this family -- that existing records gain empty-string defaults for new fields -- was removed rather than fixed. It asserted that a raw store had defaulted a field name the store was never told about, which nothing can satisfy, and the helper behind it supplied the value it was asked about, so the check passed against a write path sabotaged to discard every record. Field defaults are checkable where the fields are *declared* -- see "missing fields default to empty string" in the CRUD table above -- so point such a claim at the module that declares them, with a `**module:**` override if the document is about persistence.
+
+### Caching-fetch clients
+
+Gated on two structural signals together, because either alone is far too common: the module exports
+functions named after HTTP verbs (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`), **and** its result
+carries a network state (`isFetching`) alongside an `idle`/`loading`/`success`/`error` data state.
+That pair is the signature of the caching-data-fetching niche -- the vocabulary React Query, SWR and
+their relatives share -- rather than any one library's invention.
+
+| Claim vocabulary | Derived test |
+|---|---|
+| `enabled: false` + "idle" | call with `enabled: false`; `status === "idle"` |
+| `enabled: false` + "does not hit / never fetches / response empty" | counting fetch stub; 0 calls, falsy response |
+| "2xx" / "success" + "status" | 200 stub; `status === "success"` |
+| "isFetching" + "settles / back to false / completes" | 200 stub; `isFetching === false` after await |
+| `select` + "transform / return value / shaped" | `select` returns a marker; delivered body carries it |
+| `select` + "not called / fails / error" | 500 stub, and a `select` that throws if invoked; `status === "error"` |
+| "cache" + "once / subsequent / serves from cache" | two identical GETs; fetch stub called once |
+| "never served from cache / not cached / each call hits the network" | two identical writes; fetch stub called twice |
+
+The verb in the emitted call is read off the module's own exports, so a client exporting only `PUT`
+is tested through `PUT`. Each derived test also mints its own URL, because cache keys in this niche
+derive from method + URL -- distinct URLs make the tests order-independent against a module-level
+cache singleton without needing a reset function, whose name *would* be project-specific.
+
+Triggers are short composable phrase-fragments, not full-sentence matches, so a differently-worded
+claim in the same vocabulary resolves.
+
+**What this family deliberately does not cover.** Claims about *subscription* semantics stay pending.
+Deriving them needs a subscribe API whose callback shape (`onResponse`, `onSuccess`, …) genuinely
+varies between libraries in this niche, and guessing it is how a pattern ends up keyed to one codebase.
+
+Some of those claims can be anchored by hand instead. Anything the result object carries is fair
+game -- `apiId` and `cacheId` are resolved onto every result, including a disabled one, so the
+key-versus-storage distinction is checkable with an ordinary perspective:
+
+```markdown
+- `apiId` is the subscription key; `cacheId` is the storage key
+  - GET("https://x.test/k", { enabled: false, apiId: "a", cacheId: "c" }) captures r -> r.apiId === "a"
+```
+
+Three kinds of claim, though, have **no form in this grammar at all**, and saying "write a
+perspective" about them would be wrong:
+
+| Claim needs | Why no perspective reaches it |
+|---|---|
+| a callback to be invoked ("a subscriber is notified when…") | a claim cannot contain a function, and `**setup:**` supplies a subject rather than a handler |
+| module-level state, not a returned value ("invalidating by apiId clears every entry") | assertions are on captures; an exported `cache` map is not one |
+| a function-valued option (`select: v => …`) | same as the first, and STYLE.md argues against logic in a claim regardless |
+
+Leave those as prose. A claim that no rule reaches is *supposed* to read as pending: that is the
+state telling you the document is ahead of what the runner can check, which is different from, and
+more useful than, a claim quietly anchored to nothing.
+
+### Reactive-derivation factories
+
+When a module exports a function literally named `derive` (`export function derive(selector, combiner, options)`), lldtdd recognizes claims about the reactive-derivation contract: a derived value recomputes only when a value its selector actually reads changes, throws at construction if the selector reads nothing reactive, receives combiner arguments in selector order, notifies subscribers with the new value, skips notification when `memoize: true` and the result is unchanged, updates from inputs across multiple source instances, propagates through chained derivations, coalesces multiple same-batch input changes into one notification, and stops notifying after `destroy()`.
+
+Triggers are short phrase-fragments (`recomputation`, `combiner`/`order`, `memoiz*`, `chain*`/`upstream`, ...) rather than full-sentence matches, same style as HTTP clients above -- but still validated against exactly one real consuming project. A substantially different phrasing for the same concept is worth checking with `--verbose`.
+
+### `styled()` / `configured()` factories
+
+When a module exports `export const styled = ...`, lldtdd recognizes claims about the higher-order component factory contract: two `styled()` calls on the same base class produce distinct scope classes, two instances of one styled component share a scope class, a styled instance is still `instanceof` its base class, template-literal and function-call syntax are equivalent (both attach a scope class), a function interpolated into the template literal receives the theme object, and `configured()` produces a component that behaves like its base class with the given defaults applied. These require a `**companion:**` annotation naming the base class module, imported as `_Companion` -- the factory has no fixed base class of its own to construct against, so `**companion:**` here is load-bearing, not optional convenience.
+
+**Phrase-fragment triggers, validated against one project.** Same style and caveat as the derive factory above: the triggers are short vocabulary fragments (`different`/`same scope class`, `both syntaxes`, `function syntax`, `template literal syntax`, `theme object`, `configured`, ...) rather than full-sentence matches, so rewording within that vocabulary still derives -- but they have been exercised against exactly one real consuming project, so a substantially different phrasing for the same contract is worth checking with `--verbose`.
+
+---
+
+## When no pattern reaches your claim
+
+Write the perspective. That is the supported answer, not a workaround.
+
+```markdown
+- does calling render() twice leave exactly one copy of the built structure?
+  - render() then render() captures r -> r.elem.children.length === 1
+```
+
+lldtdd's own documents currently resolve every claim they carry on exactly this basis, with no
+project-specific pattern catalog of any kind. That is a measurement, not a gate: CI runs the sweep
+as an audit, and nothing fails the build when a claim goes pending unless a caller opts into
+`--fail-on-pending`. `lldtdd run --no-mutate` in this repo prints the current split between direct
+and perspective-verified claims.
+
+There used to be a second answer here: a project could supply *example-anchored* patterns in an
+`lldtdd.catalog.ts` at its root -- regexes matched against the near-exact wording of its own claims,
+each building a hand-written test body against its own internals. **That mechanism has been
+removed.** If you are migrating from a version that had it, each catalog pattern becomes a
+perspective on the claim it was keyed to.
+
+The reason it went, since it looked useful: an example-anchored pattern is a lookup table from one
+sentence to one hand-written test body. It is not derivation and cannot be, because what such
+claims describe is **intent**, and intent is not in the source -- "render() is idempotent" cannot be
+read off an implementation, and if `render()` had a double-append bug, structural derivation would
+faithfully derive "render() appends" and pass.
+
+So the real comparison was never *catalog vs. better AST work*. It was **catalog vs. perspective**,
+and the perspective wins on every axis:
+
+| | example-anchored catalog | concrete perspective |
+|---|---|---|
+| where the check lives | a `.ts` file, away from the claim | in the document, next to the claim |
+| keyed by | fuzzy regex over English prose | position in the document |
+| reword the claim | silently drops back to pending | unaffected |
+| two patterns matching one claim | needs a `priority` field and a collision auditor | cannot happen |
+| readable by a non-programmer reviewer | no | yes |
 
 ---
 
 ## Runtime utilities
 
-The tool ships helpers that eliminate boilerplate from every test scenario.
-
-### `createDbLifecycle(database, collections, opts?)`
-
-Returns `initDb` and `reset` for any lowdb-style database. Eliminates the repeated temp-dir + init + zero + write pattern.
-
-```js
-import { createDbLifecycle } from "lldtdd/runtime";
-
-const { initDb, reset } = createDbLifecycle(database, ["bookmarks", "categories"]);
-```
-
-`initDb` creates a fresh temp-dir database each run. `reset` clears all records in the listed collections between tests. For `isSelfDatabase` modules (the raw database object), the lifecycle is auto-wired with no annotation needed.
-
-### `withMockFetch(responseBody, fn)`
-
-Stubs `global.fetch` for the duration of `fn`, then restores it — even if `fn` throws.
-
-```js
-import { withMockFetch } from "lldtdd/runtime";
-
-const results = await withMockFetch({ results: [...] }, () => searchProvider(engineId, term));
-```
-
-### `withOrderTracking(...triggers)`
-
-Runs multiple async operations concurrently and returns the order they completed. Used to verify write-queue ordering guarantees.
-
-```js
-const order = await withOrderTracking(() => db.write(), () => db.write());
-// order[0] === 1 && order[1] === 2 means A completed before B
-```
-
-### `withFaultInjection(target, method, trigger)`
-
-Patches `target[method]` to fail once, then calls `trigger`, then verifies recovery. Returns `true` if the system recovered.
-
-```js
-const recovered = await withFaultInjection(database.db, "write", () => database.write());
-expect(recovered).toBe(true);
-```
-
-### `withSchemaEvolution(dbData, writeFn, collection, record, newField)`
-
-Writes a raw record (bypassing CRUD field filtering), then reads it back. The new field should have an empty-string default. Verifies: "schema changes do not require data migration."
-
-### `withShapeComparison(fn1, fn2)`
-
-Calls both functions and returns `true` if their results have the same shape (same keys at every level). Used to verify normalization across different configurations.
-
-### `createEntityRegistry(modules)`
-
-Builds a standard CRUD interface (`create`, `read`, `readAll`, `update`) from a map of entity name → module. Powers `withSeedAndRead` and `withIsolationTest`.
-
-### `withSeedAndRead(createFn, readAllFn, fixtures)`
-
-Seeds records using `createFn`, calls `readAllFn`, and returns the result. Used to verify "returns an array" / "flat collection" claims.
-
-### `withIsolationTest(registry, contextEntity, primaryEntity, contextField, sharedFixture, entityFixture, mutation)`
-
-Creates two entities sharing a context, mutates one, and verifies the other is unchanged. Used to prove isolation invariants.
-
----
-
-## Pending state
-
-**Pending is not a problem.** It means: intent documented, implementation not yet verified.
-
-An LLD written before implementation will be entirely pending. That is correct. Pending assertions are progress markers — each one that turns green is a verified step toward the stated intent.
-
-```
-○ pending    ->  intent documented
-✓ passing    ->  intent verified
-✗ failing    ->  implementation drifted from intent
-```
-
-When all assertions pass, the implementation satisfies the stated intent for that slice.
+None of these are called from an `.lld.md` file directly -- the runner reaches for them automatically once a claim's vocabulary matches the pattern they back (write-queue ordering, fault-injection recovery, shape-normalization comparisons, seed-and-read/isolation checks for CRUD entities). If you're writing claims rather than extending the derivation engine itself, you don't need to know their signatures; they live in `src/runtime.ts` for anyone who does.
 
 ---
 
@@ -514,7 +831,7 @@ parseInteger("042") -> "042"   <- unit test (specific pair)
 ```markdown
 ## Auto-open delays until the element is in the DOM
 
-- `openOnRender` defaults to a small delay so the dialog is guaranteed to be attached before `showModal()` is called — opening before attachment fails silently
+- `openOnRender` defaults to a small delay so the dialog is guaranteed to be attached before `showModal()` is called; opening before attachment fails silently
   - does setting openOnRender: false prevent the dialog from opening on its own?
 ```
 
@@ -522,7 +839,7 @@ parseInteger("042") -> "042"   <- unit test (specific pair)
 ```markdown
 ## Auto-open delays until the element is in the DOM
 
-- `openOnRender` defaults to a small delay — enough time for the element to be in the document
+- `openOnRender` defaults to a small delay, enough time for the element to be in the document
 - opening an element that isn't yet in the DOM would fail silently; the delay is a correctness decision
   - does setting openOnRender: false prevent the dialog from opening on its own?
 ```

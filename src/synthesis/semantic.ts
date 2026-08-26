@@ -40,27 +40,21 @@ const SEMANTIC_RULES: Array<{
     },
   },
 
-  // Wrong / incorrect / bad — typically for passwords or other credentials
+  // Wrong / incorrect / bad -- a value that should be rejected. Deliberately generic: a wrong
+  // password is wrong in any module, so synthesizing a *specific* credential literal was example-
+  // anchoring in synthesis's clothing -- the values it produced ("wrongpassword", "wrong@...")
+  // happened to line up with this project's own seed data and would false-fail against any module
+  // seeded differently. A rejectable value needs no knowledge of the module's real credentials.
   {
     pattern: /\b(?:wrong|incorrect|bad)\b/i,
-    generate: (p) => {
-      const n = p.name.toLowerCase();
-      if (n.includes("password") || n.includes("pass")) return "wrongpassword";
-      if (n.includes("email")) return "wrong@notvalid.example";
-      return "invalid-value-xyz";
-    },
+    generate: () => "invalid-value-xyz",
   },
 
-  // Valid / correct / good credentials
-  {
-    pattern: /\b(?:valid\s+credentials?|correct\s+credentials?|good\s+credentials?)\b/i,
-    generate: (p) => {
-      const n = p.name.toLowerCase();
-      if (n.includes("email")) return "user@example.com";
-      if (n.includes("password") || n.includes("pass")) return "password123";
-      return "valid-value";
-    },
-  },
+  // "Valid credentials" is intentionally NOT a rule. A value that must be *accepted* has to equal
+  // the module's real seed data, which synthesis cannot know -- guessing "user@example.com" /
+  // "password123" only worked because they matched one example's fixtures. Without a rule the claim
+  // synthesizes nothing and stays pending (or is carried by its perspectives), which is the honest
+  // state: the author writes the accepted credential, the same way they write any other literal.
 
   // Fresh / new key
   {
@@ -86,7 +80,7 @@ const TYPE_DEFAULTS: Array<[RegExp, unknown]> = [
   [/object/i,                       {}],
 ];
 
-export function synthesizeArg(description: string, param: ParamInfo, allParams: ParamInfo[]): unknown {
+export function synthesizeArg(description: string, param: ParamInfo, _allParams: ParamInfo[]): unknown {
   for (const rule of SEMANTIC_RULES) {
     if (rule.pattern.test(description)) {
       return rule.generate(param, description);

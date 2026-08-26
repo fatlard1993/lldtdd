@@ -1,330 +1,142 @@
 #!/usr/bin/env bun
 
+// Argument parsing and command dispatch. The `run` pipeline itself lives in run.ts so that
+// pipeline.ts can import it without importing a program -- see the header there.
+
 import { resolve } from "path";
-import { readFile, writeFile } from "fs/promises";
-import { existsSync } from "fs";
-import { loadConfig, runFiles, streamFiles } from "./runner.ts";
+import { existsSync, statSync } from "fs";
 import { lintFile } from "./linter.ts";
 import { suggestFile, applyInferences } from "./suggest.ts";
-import { parseFile, parse } from "./parser.ts";
-import { extractFacts } from "./ast.ts";
-import { detectDrift } from "./drift.ts";
-import { runMutations } from "./mutate.ts";
-import { getModuleExports } from "./inference.ts";
+import { parseFile } from "./parser.ts";
+import { extractFacts } from "./ast/index.ts";
+import { detectDrift, hasDriftBaseline } from "./drift.ts";
+import { runMutations, summarizeMutations } from "./mutate.ts";
 import { translate } from "./translator/index.ts";
-import { BunAdapter } from "./adapters/bun.ts";
+import { runSuite } from "./bunRunner.ts";
+import { runAndCheck, DEFAULT_GLOB_IGNORE } from "./run.ts";
 import { glob } from "glob";
 
 const [, , command, ...args] = process.argv;
-
-// Color helpers — disabled when NO_COLOR is set or stdout is not a TTY
-const _color = !process.env.NO_COLOR && !!process.stdout.isTTY;
-const c = {
-  bold:   (s: string) => _color ? `\x1b[1m${s}\x1b[0m`  : s,
-  dim:    (s: string) => _color ? `\x1b[2m${s}\x1b[0m`  : s,
-  red:    (s: string) => _color ? `\x1b[31m${s}\x1b[0m` : s,
-  green:  (s: string) => _color ? `\x1b[32m${s}\x1b[0m` : s,
-  yellow: (s: string) => _color ? `\x1b[33m${s}\x1b[0m` : s,
-  cyan:   (s: string) => _color ? `\x1b[36m${s}\x1b[0m` : s,
-  gray:   (s: string) => _color ? `\x1b[90m${s}\x1b[0m` : s,
-};
-
-const HELP = `
-lldtdd — Low Level Design Test Driver
+export const HELP = `
+lldtdd -- runnable Low Level Design docs: design documents whose claims execute as tests
 
 Commands:
-  run [-v] [pattern]        Run assertions, drift check, and mutation testing (default: **/*.lld.md)
-  lint [pattern]            Check LLD files for structure and style issues
-  suggest [--apply] <file>  Show (or apply) auto-inferred method decorations
+  run [-v] [--no-mutate] [--fail-on-pending] [--fail-on-weak] [pattern]
+                            Run assertions, drift check, and mutation testing (default: **/*.lld.md)
+  lint [--execute] [pattern]
+                            Check LLD files for structure and style issues
+  suggest [--apply] [--execute] <file>
+                            Show (or apply) auto-inferred method decorations
   drift <file.lld.md>       Detect structural changes since HEAD that may invalidate claims
   mutate <file.lld.md>      Find claims that don't catch real implementation mutations
   help                      Show this message
 
 Flags:
   -v, --verbose             Show derived test for each assertion (source, call, assertion type)
+  --no-mutate               Skip mutation testing (run: assertions + drift only, faster)
+  --fail-on-pending         run only: exit non-zero if any claim is pending, not just on failure.
+                            For a mature corpus that has reached 0 pending and wants to stay there.
+  --fail-on-weak            run only: exit non-zero if any claim passes on no-throw only (◐) --
+                            green that checked nothing the code returned or did. Ratchets strength.
+  --execute                 lint/suggest only: load the module under test for sharper
+                            inference. This runs its top-level code and calls its zero-arg
+                            exports in this process. Without it, both commands only read source.
+
+Which commands run your code:
+  run and mutate execute the module under test -- that is what they are for.
+  lint, suggest, and drift only read it, unless you pass --execute.
+
+Exit codes:
+  run exits non-zero only when a verified claim fails. Drift and surviving
+  mutations are reported but advisory. An unrecognized command exits 1.
 `.trim();
 
-/** Structured result returned by runAndCheck — no process.exit called. */
-export interface RunOutcome {
-  passed: number;
-  failed: number;
-  skipped: number;
-  survivingMutations: number;
-  hadDrift: boolean;
-  exitCode: 0 | 1;
+/** Prints one line and exits non-zero. For user mistakes -- a bad path, a missing argument -- where
+ *  a stack trace names the reader's internals instead of what the user typed. */
+function fail(message: string): never {
+  console.error(`lldtdd: ${message}`);
+  process.exit(1);
 }
 
-/** Runs the pipeline on a pre-built list of {doc, lldFile} pairs. Core of runAndCheck. */
-async function runDocs(
-  items: Array<{ doc: import("./types.ts").LLDDocument; lldFile: string }>,
-  cwd: string,
-  opts: { verbose?: boolean; silent?: boolean } = {}
-): Promise<RunOutcome> {
-  const verbose = opts.verbose ?? false;
-  const changedFiles = gitChangedFiles(cwd);
-  let totalPassed = 0;
-  let totalFailed = 0;
-  let totalSkipped = 0;
-  let totalSurvivedMutations = 0;
-  let hadDrift = false;
-  const results: import("./types.ts").RunResult[] = [];
-
-  const { synthesize } = await import("./synthesis/index.ts");
-  const runAdapter = new BunAdapter();
-
-  for (const { doc, lldFile: file } of items) {
-    const translated = await translate(doc);
-    const suite = await synthesize(translated);
-    const suiteRel = suite.modulePath.replace(cwd + "/", "");
-    if (!opts.silent) {
-      const header = verbose ? `\n${c.bold(suite.title)}  ${c.dim(suiteRel)}` : `\n${c.bold(suite.title)}`;
-      console.log(header);
-    }
-    const r = await runAdapter.run(suite);
-    r.modulePath = suite.modulePath;
-    r.groups = translated.groups;
-    r.lldFile = file; // may be "" for in-memory docs; mutations skipped when empty
-    results.push(r);
-
-    const casesByDesc = new Map<string, import("./types.ts").TestCase>();
-    if (verbose && r.groups) {
-      for (const g of r.groups) {
-        for (const tc of g.cases) {
-          casesByDesc.set(tc.description, tc);
-          for (const p of tc.perspectives ?? []) casesByDesc.set(p.description, p);
-        }
-      }
-    }
-
-    if (!opts.silent) {
-      for (const cr of r.cases) {
-        const icon = cr.status === "pass" ? c.green("✓") : cr.status === "fail" ? c.red("✗") : c.dim("○");
-        const desc = cr.status === "fail" ? c.bold(cr.description) : cr.status === "skip" ? c.dim(cr.description) : cr.description;
-        console.log(`  ${icon} ${desc}`);
-        if (verbose) printTestCaseDetail(casesByDesc.get(cr.description), "    ");
-        if (!verbose && cr.status === "fail") {
-          const tc = casesByDesc.get(cr.description);
-          if (tc?.source === "ai" && tc.action.method) {
-            const argStr = (tc.action.args ?? []).map(a => JSON.stringify(a)).join(", ");
-            console.log(`    ${c.dim("synthesized:")} ${c.dim(tc.action.method)}(${c.dim(argStr)})`);
-          }
-        }
-        if (cr.error) console.log(`    ${c.red(cr.error)}`);
-        for (const p of cr.perspectives ?? []) {
-          const picon = p.status === "pass" ? c.green("✓") : p.status === "fail" ? c.red("✗") : c.dim("○");
-          const pdesc = p.status === "fail" ? c.bold(p.description) : p.status === "skip" ? c.dim(p.description) : p.status === "skip" ? c.dim(p.description) : p.description;
-          console.log(`    ${picon} ${pdesc}`);
-          if (verbose) printTestCaseDetail(casesByDesc.get(p.description), "      ");
-          if (!verbose && p.status === "fail") {
-            const ptc = casesByDesc.get(p.description);
-            if (ptc?.source === "ai" && ptc.action.method) {
-              const argStr = (ptc.action.args ?? []).map(a => JSON.stringify(a)).join(", ");
-              console.log(`      ${c.dim("synthesized:")} ${c.dim(ptc.action.method)}(${c.dim(argStr)})`);
-            }
-          }
-          if (p.error) console.log(`      ${c.red(p.error)}`);
-        }
-      }
-      const pendingNote = r.skipped > 0 ? c.dim(`, ${r.skipped} pending`) : "";
-      const passedStr = r.passed > 0 ? c.green(`${r.passed} passed`) : `${r.passed} passed`;
-      const failedStr = r.failed > 0 ? c.red(`${r.failed} failed`) : `${r.failed} failed`;
-      console.log(`  ${passedStr}, ${failedStr}${pendingNote} ${c.dim(`(${r.duration}ms)`)}`);
-    }
-    totalPassed += r.passed;
-    totalFailed += r.failed;
-    totalSkipped += r.skipped;
-
-    if (r.groups) {
-      const allClaims = r.groups.flatMap(g =>
-        g.cases.flatMap(tc => [tc.description, ...(tc.perspectives ?? []).map(p => p.description)])
-      );
-      const modules = new Set<string>([r.modulePath, ...r.groups.flatMap(g => g.modulePath ? [g.modulePath] : [])]);
-      let driftChecked = 0;
-      let driftFailed = 0;
-
-      for (const mod of modules) {
-        if (!mod || !existsSync(mod)) continue;
-        const modRel = mod.replace(cwd + "/", "");
-        const isChanged = changedFiles === null || changedFiles.has(mod);
-
-        if (!isChanged) {
-          if (verbose && !opts.silent) console.log(`  ${c.green("✓")} ${c.dim("drift")}  ${c.dim(modRel)}`);
-          continue;
-        }
-
-        driftChecked++;
-        const report = await detectDrift(mod, allClaims);
-        if (!report) {
-          if (verbose && !opts.silent) console.log(`  ${c.green("✓")} ${c.dim("drift")}  ${c.dim(modRel)}  ${c.dim("·  function signatures unchanged vs HEAD")}`);
-          continue;
-        }
-
-        hadDrift = true;
-        driftFailed++;
-        if (!opts.silent) {
-          console.log(`  ${c.red("✗")} ${c.dim("drift")}  ${c.dim(modRel)}  ${c.dim("·  function signatures changed vs HEAD")}`);
-          for (const ch of report.changes) {
-            const icon = ch.risk === "high" ? c.red("●") : ch.risk === "medium" ? c.yellow("●") : c.dim("○");
-            console.log(`      ${icon}  ${c.dim(ch.type.padEnd(8))} ${ch.name}`);
-            for (const d of ch.diffs) console.log(`               ${c.dim(d)}`);
-          }
-          for (const { change, affectedClaims } of report.impacts) {
-            for (const claim of affectedClaims) console.log(`        ${c.dim(`[${change.name}]`)} "${claim}"`);
-          }
-        }
-      }
-
-      if (!opts.silent && !verbose && driftChecked > 0 && driftFailed === 0) {
-        console.log(`  ${c.green("✓")} ${c.dim("drift")}`);
-      }
-    }
-
-    if (r.failed === 0 && r.passed > 0 && r.modulePath && existsSync(r.modulePath) && file) {
-      const mutSuite = await translate(doc); // reuse already-parsed doc
-      const mutAdapter = new BunAdapter();
-      const testRunner = async (mutatedPath: string) =>
-        mutAdapter.run({ ...mutSuite, modulePath: mutatedPath });
-      const rel = r.modulePath.replace(cwd + "/", "");
-      const mutations = await runMutations(r.modulePath, testRunner);
-      const survived = mutations.filter(m => m.survived);
-
-      if (!opts.silent) {
-        if (verbose) {
-          if (mutations.length === 0) {
-            console.log(`  ${c.dim("○")} ${c.dim("mutations")}  ${c.dim(rel)}  ${c.dim("no mutable patterns found")}`);
-          } else {
-            const headerIcon = survived.length === 0 ? c.green("✓") : c.red("✗");
-            const count = c.dim(`${mutations.length} probed`);
-            const survivedNote = survived.length > 0 ? `  ${c.dim("·")}  ${c.yellow(`${survived.length} survived`)}` : "";
-            console.log(`  ${headerIcon} ${c.dim("mutations")}  ${c.dim(rel)}  ${count}${survivedNote}`);
-            for (const m of mutations) {
-              const fn = m.functionName ? `${m.functionName}()` : "";
-              const icon = m.survived ? c.red("✗") : c.green("✓");
-              console.log(`      ${icon}  ${c.dim(fn ? fn + "  " : "")}${c.dim(m.description)}`);
-            }
-          }
-        } else if (mutations.length > 0) {
-          const icon = survived.length === 0 ? c.green("✓") : c.red("✗");
-          const detail = survived.length > 0 ? c.dim(`  ·  ${survived.length} survived`) : "";
-          console.log(`  ${icon} ${c.dim("mutations")}${detail}`);
-        }
-
-        if (survived.length > 0) {
-          totalSurvivedMutations += survived.length;
-          for (const m of survived) {
-            const fn = m.functionName ? `${m.functionName}()` : "unknown";
-            console.log(`      ${c.yellow("△")} ${c.bold(fn)}  ${c.dim(mutationBehavior(m.description))}`);
-            const best = m.uncoveredBy.find(cr => cr.endsWith("?")) ?? m.uncoveredBy[0];
-            if (best) console.log(`        ${c.dim("→")} add a perspective to: ${c.cyan(`"${best}"`)}`);
-            else      console.log(`        ${c.dim("→")} no related claim found — consider adding a group for ${c.cyan(fn)}`);
-          }
-        }
-      } else {
-        totalSurvivedMutations += survived.length;
-      }
-    }
-  }
-
-  if (!opts.silent && results.length > 1) {
-    const pendingNote = totalSkipped > 0 ? c.dim(`, ${totalSkipped} pending`) : "";
-    const passedStr = totalPassed > 0 ? c.green(`${totalPassed} passed`) : `${totalPassed} passed`;
-    const failedStr = totalFailed > 0 ? c.red(`${totalFailed} failed`) : `${totalFailed} failed`;
-    console.log(`\n${c.bold("Total:")} ${passedStr}, ${failedStr}${pendingNote}`);
-  }
-
-  if (!opts.silent && totalSkipped > 0) {
-    console.log(`\n${c.yellow("Pending:")}`);
-    for (const r of results) {
-      for (const cr of r.cases.filter(cr => cr.status === "skip")) {
-        console.log(`  ${c.dim("○")} ${c.dim(`[${r.suiteName}]`)} ${cr.description}`);
-      }
-    }
-  }
-
-  if (!opts.silent && totalSurvivedMutations > 0) {
-    console.log(`\n${c.yellow(`${totalSurvivedMutations} surviving mutation(s)`)} — add perspectives to strengthen these claims`);
-  }
-
-  return {
-    passed: totalPassed,
-    failed: totalFailed,
-    skipped: totalSkipped,
-    survivingMutations: totalSurvivedMutations,
-    hadDrift,
-    exitCode: (totalFailed > 0 || totalSurvivedMutations > 0 ? 1 : 0) as 0 | 1,
-  };
+/** Resolves a document path the user named, failing cleanly if it isn't there. */
+function resolveDocArg(filePath: string | undefined, usage: string): string {
+  if (!filePath) fail(`usage: ${usage}`);
+  const abs = resolve(process.cwd(), filePath);
+  if (!existsSync(abs)) fail(`no such document: ${filePath}`);
+  if (statSync(abs).isDirectory()) fail(`expected a document, got a directory: ${filePath}`);
+  return abs;
 }
 
-/** File-based entry point: resolves glob/path and calls runDocs. */
-export async function runAndCheck(
-  pattern: string | undefined,
-  cwd: string,
-  opts: { verbose?: boolean; silent?: boolean } = {}
-): Promise<RunOutcome> {
-  const { glob: globFn } = await import("glob");
-  const isLiteralPath = pattern && !/[*?{}[\]!]/.test(pattern);
-  const lldFiles = isLiteralPath
-    ? [resolve(cwd, pattern)]
-    : await globFn(pattern ?? "**/*.lld.md", { cwd, absolute: true, ignore: ["node_modules/**"] });
-  const items = await Promise.all(lldFiles.map(async f => ({ doc: await parseFile(f), lldFile: f })));
-  return runDocs(items, cwd, opts);
+/** A bare directory named where a document or glob was expected means "everything under it".
+ *  Without the expansion the glob matches the directory itself and the reader dies of EISDIR,
+ *  which names this tool's file handling instead of what the user meant -- and what they meant
+ *  is unambiguous. */
+function expandDirPattern(pattern: string, cwd: string): string {
+  const abs = resolve(cwd, pattern);
+  return existsSync(abs) && statSync(abs).isDirectory()
+    ? `${pattern.replace(/\/+$/, "")}/**/*.lld.md`
+    : pattern;
 }
 
-/** Content-based entry point: parses LLD content in-memory, no file required. */
-export async function runContentAndCheck(
-  content: string,
-  cwd: string,
-  opts: { verbose?: boolean; silent?: boolean } = {}
-): Promise<RunOutcome> {
-  const doc = parse(content, resolve(cwd, "inline.lld.md"));
-  return runDocs([{ doc, lldFile: "" }], cwd, opts);
+/** Runs this CLI as a subprocess and reports what the calling shell would see.
+ *
+ *  This is the anchor that lets `lld/cli.lld.md` make checkable claims about the command surface
+ *  itself. Exit codes and dispatch are properties of the spawned program, not of any function a
+ *  claim could call in-process -- the same reasoning as `runDocument` in run.ts, one level up. */
+export function invokeCli(...argv: string[]): { exitCode: number; stdout: string; stderr: string } {
+  const proc = Bun.spawnSync(["bun", new URL(import.meta.url).pathname, ...argv], {
+    cwd: process.cwd(),
+  });
+  return { exitCode: proc.exitCode, stdout: proc.stdout.toString(), stderr: proc.stderr.toString() };
 }
 
-// Canonical scenario functions: document expected outcomes for known fixtures.
-// Expression bodies (not blocks) so extractZeroArgScenarios can detect them.
-// runPassingExample and runSurvivingMutationsExample use subprocess (circular import
-// would block codegen-time extraction; see re-entry guard in ast.ts).
-const _CWD = resolve(import.meta.dir, "..");
-const _spawnRun = (lldPattern: string) => {
-  const r = Bun.spawnSync(["bun", "run", import.meta.filename, "run", lldPattern],
-    { cwd: _CWD, stdout: "pipe", stderr: "pipe" });
-  const out = new TextDecoder().decode(r.stdout as Uint8Array);
-  return { exitCode: r.exitCode as 0 | 1, hadMutations: out.includes("probed"), hadDrift: out.includes("drift") };
-};
-
-// Demonstrates runContentAndCheck with in-memory LLD content — no file required
-export const runContentExample = () =>
-  runContentAndCheck(
-    `# Inline Test\n> examples/cart.ts\n\n## Cart loads\n- addItem("s", "sku-apple") → resolves`,
-    _CWD, { silent: true }
-  );
-
-export const runPassingExample = () => _spawnRun("examples/auth.lld.md");
-// Failing scenario: derived from framework internals — a wrong direct assertion on a known module.
-// addItem returns a cart object, not null; the framework generates a failing test without a fixture file.
-export const runFailingExample = () =>
-  runContentAndCheck(
-    `# Derived Failure\n> examples/cart.ts\n\n## Wrong return type\n- addItem("s1", "sku-apple") -> null`,
-    _CWD, { silent: true }
-  );
-export const runSurvivingMutationsExample = () => _spawnRun("examples/cart.lld.md");
+/** Fails on any -flag the current command doesn't define. Every flag here is boolean, so an
+ *  unrecognized one is a typo -- and silently ignoring it does the opposite of what was asked:
+ *  `--no-mutat` runs the mutation pass the user meant to skip, `--verbos` stays quiet. The command
+ *  that rejects an unknown *command* has to reject an unknown flag too, or the care is half-applied. */
+function rejectUnknownFlags(allowed: string[]): void {
+  const unknown = args.filter(a => a.startsWith("-") && !allowed.includes(a));
+  if (unknown.length > 0) fail(`unknown flag: ${unknown.join(", ")}  (run \`lldtdd help\`)`);
+}
 
 async function main() {
   const cwd = process.cwd();
-  const config = await loadConfig(cwd);
 
   switch (command ?? "run") {
     case "run": {
+      rejectUnknownFlags(["-v", "--verbose", "--no-mutate", "--fail-on-pending", "--fail-on-weak"]);
       const verbose = args.includes("--verbose") || args.includes("-v");
-      const pattern = args.find(a => !a.startsWith("-"));
-      const result = await runAndCheck(pattern, cwd, { verbose });
+      const mutate = !args.includes("--no-mutate");
+      const failOnPending = args.includes("--fail-on-pending");
+      const failOnWeak = args.includes("--fail-on-weak");
+      const named = args.find(a => !a.startsWith("-"));
+      // A named-but-absent path is a typo, not a crash: report it the way the other commands do
+      // rather than letting it reach the generic handler and pick up a debug-trace hint.
+      if (named && !/[*?{}[\]!]/.test(named) && !existsSync(resolve(cwd, named))) {
+        fail(`no such document: ${named}`);
+      }
+      const pattern = named ? expandDirPattern(named, cwd) : undefined;
+      const result = await runAndCheck(pattern, cwd, { verbose, mutate, failOnPending, failOnWeak });
       process.exit(result.exitCode);
       break;
     }
-    // Placeholder — actual run moved to runAndCheck above
+
     case "lint": {
-      const pattern = args[0] ?? "**/*.lld.md";
-      const files = await glob(pattern, { cwd, absolute: true, ignore: ["node_modules/**"] });
+      rejectUnknownFlags(["--execute"]);
+      const execute = args.includes("--execute");
+      const named = args.find(a => !a.startsWith("-"));
+      // Same reasoning as `run` above: a named path that isn't there is a typo, and "no files
+      // found" plus exit 0 is what a clean sweep also looks like.
+      if (named && !/[*?{}[\]!]/.test(named) && !existsSync(resolve(cwd, named))) {
+        fail(`no such document: ${named}`);
+      }
+      const pattern = named ? expandDirPattern(named, cwd) : "**/*.lld.md";
+      // A literal file path skips the glob so the sweep's exclusions cannot veto it: naming
+      // `lld/fixtures/x.lld.md` explicitly must lint that file, the same contract `run` keeps.
+      const isLiteralFile = !/[*?{}[\]!]/.test(pattern) && existsSync(resolve(cwd, pattern));
+      const files = isLiteralFile
+        ? [resolve(cwd, pattern)]
+        : await glob(pattern, { cwd, absolute: true, ignore: DEFAULT_GLOB_IGNORE });
 
       if (files.length === 0) {
         console.log("No .lld.md files found.");
@@ -335,7 +147,7 @@ async function main() {
       let totalWarnings = 0;
 
       for (const file of files) {
-        const result = await lintFile(file);
+        const result = await lintFile(file, { execute });
         if (result.issues.length > 0) {
           const rel = file.replace(cwd + "/", "");
           console.log(`\n${rel}`);
@@ -358,16 +170,14 @@ async function main() {
     }
 
     case "suggest": {
-      const apply = args[0] === "--apply";
-      const filePath = apply ? args[1] : args[0];
-
-      if (!filePath) {
-        console.error("Usage: lldtdd suggest [--apply] <file.lld.md>");
-        process.exit(1);
-      }
-
-      const absFile = resolve(cwd, filePath);
-      const result = await suggestFile(absFile);
+      // Flags are read positionally nowhere else, and a user who writes them in their habitual
+      // trailing position should not silently get a dry run.
+      rejectUnknownFlags(["--apply", "--execute"]);
+      const apply = args.includes("--apply");
+      const execute = args.includes("--execute");
+      const filePath = args.find(a => !a.startsWith("-"));
+      const absFile = resolveDocArg(filePath, "lldtdd suggest [--apply] [--execute] <file.lld.md>");
+      const result = await suggestFile(absFile, { execute });
 
       if (!result.moduleExists) {
         console.log(`module not yet implemented: ${result.modulePath}`);
@@ -379,7 +189,7 @@ async function main() {
 
       for (const group of result.groups) {
         if (group.hasMethod || group.hasSetup) {
-          console.log(`  ✓ ## ${group.name} — already annotated`);
+          console.log(`  ✓ ## ${group.name} -- already annotated`);
         } else if (group.inferred) {
           const tag = group.inferred.confidence === "partial" ? "~" : "+";
           const action = apply && group.inferred.confidence !== "partial"
@@ -389,32 +199,23 @@ async function main() {
           if (group.inferred.confidence !== "partial") autoCount++;
           else manualCount++;
         } else {
-          console.log(`  ○ ## ${group.name} — no match found, add **method:** manually`);
+          console.log(`  ○ ## ${group.name} -- no match found, add **method:** manually`);
           manualCount++;
         }
       }
 
       if (apply && autoCount > 0) {
-        const applied = await applyInferences(absFile);
+        const applied = await applyInferences(absFile, { execute });
         console.log(`\n${applied} annotation${applied !== 1 ? "s" : ""} applied to ${filePath}`);
       } else if (!apply && autoCount > 0) {
-        console.log(`\n${autoCount} auto-applicable — run with --apply to write them`);
+        console.log(`\n${autoCount} auto-applicable; run with --apply to write them`);
       }
       break;
     }
 
-    case "helpers":
-    case "derive":
-    case "rhythm": {
-      console.error(`The "${command}" command was removed. Helper files are no longer part of the lldtdd workflow — tests are derived directly from the implementation via AST analysis. Run \`lldtdd help\` to see current commands.`);
-      process.exit(1);
-    }
-
     case "drift": {
-      const filePath = args[0];
-      if (!filePath) { console.error("Usage: lldtdd drift <file.lld.md>"); process.exit(1); }
-
-      const absFile = resolve(cwd, filePath);
+      rejectUnknownFlags([]);
+      const absFile = resolveDocArg(args.find(a => !a.startsWith("-")), "lldtdd drift <file.lld.md>");
       const doc = await parseFile(absFile);
       const allClaims = doc.groups.flatMap(g =>
         g.assertions.flatMap(a => [a.raw, ...(a.perspectives ?? []).map(p => p.raw)])
@@ -425,7 +226,17 @@ async function main() {
       for (const g of doc.groups) if (g.moduleOverride) modules.add(g.moduleOverride);
 
       let anyDrift = false;
+      let anyChecked = false;
       for (const mod of modules) {
+        // "no baseline" is not "no drift". A module never committed at HEAD, or one outside any git
+        // repo, has nothing to compare against -- printing the green "no structural drift" badge for
+        // it is exactly the pending-claim-wearing-a-green this tool exists to refuse. run.ts's inline
+        // pass already makes this distinction (hasDriftBaseline); the standalone subcommand must too.
+        if (!hasDriftBaseline(mod)) {
+          console.log(`No baseline for ${mod.replace(cwd + "/", "")} -- it is not committed at HEAD (or lies outside any git repo), so drift could not be checked.`);
+          continue;
+        }
+        anyChecked = true;
         const report = await detectDrift(mod, allClaims);
         if (!report) continue;
         anyDrift = true;
@@ -445,43 +256,66 @@ async function main() {
           }
         }
       }
-      if (!anyDrift) console.log("No structural drift detected since HEAD.");
+      if (anyChecked && !anyDrift) console.log("No structural drift detected since HEAD.");
       break;
     }
 
     case "mutate": {
-      const filePath = args[0];
-      if (!filePath) { console.error("Usage: lldtdd mutate <file.lld.md>"); process.exit(1); }
-
-      const absFile = resolve(cwd, filePath);
+      rejectUnknownFlags([]);
+      const absFile = resolveDocArg(args.find(a => !a.startsWith("-")), "lldtdd mutate <file.lld.md>");
       const doc = await parseFile(absFile);
       if (!doc.module) { console.log("No module pointer found."); break; }
 
-      // Find the implementation module (one level deeper from the helper if possible)
-      // The helper imports from the implementation — for now mutate the helper directly
       const modulePath = doc.module;
       console.log(`\nMutation test: ${modulePath.replace(cwd + "/", "")}\n`);
 
-      // Generate and run lldtdd tests via the adapter
-      const suite = await translate(doc);
-      const adapter = new BunAdapter();
+      // Generate and run lldtdd tests -- synthesize so this matches what `lldtdd run`
+      // actually verifies (its mutation gate synthesizes too).
+      const { synthesize } = await import("./synthesis/index.ts");
+      const suite = await synthesize(await translate(doc, { execute: true }));
 
       const testRunner = async (mutatedPath: string) =>
-        adapter.run({ ...suite, modulePath: mutatedPath });
+        runSuite({ ...suite, modulePath: mutatedPath, substitutedFor: suite.modulePath });
+
+      // Mutation testing measures the claims, so there have to be claims that run. Against an
+      // all-pending document every mutant trivially "survives" -- not because the claims are weak
+      // but because there are none, and reporting that as a mutation score would be noise
+      // dressed up as a finding. `run` gates its inline mutation pass the same way.
+      const baseline = await runSuite(suite);
+      // Order matters: a document with a failing claim also has zero passing ones, and telling
+      // its author there is "nothing to mutate against" would point them at the wrong problem.
+      if (baseline.failed > 0) {
+        console.log(`${baseline.failed} claim(s) already fail against the unmutated implementation.\nMutation results would be meaningless until those pass; fix them first.`);
+        process.exit(1);
+      }
+      if (baseline.passed + baseline.shallow === 0) {
+        console.log(baseline.pending > 0
+          ? `Nothing to mutate against: all ${baseline.pending} claim(s) in this document are pending.\nAnchor them with a **method:** or **setup:** annotation, or an inline call, and run again.`
+          : `Nothing to mutate against: this document produced no runnable claims.`);
+        break;
+      }
 
       const results = await runMutations(modulePath, testRunner);
 
-      let survived = 0;
       for (const r of results) {
-        const icon = r.survived ? "🔴 SURVIVED" : "✓  killed  ";
+        const icon = r.outcome === "survived" ? "🔴 SURVIVED"
+          : r.outcome === "errored" ? "⚠  no-load  "
+          : "✓  killed  ";
         console.log(`  ${icon}  ${r.description}`);
-        if (r.survived) {
-          survived++;
+        if (r.outcome === "survived") {
           for (const claim of r.uncoveredBy) console.log(`      ○ ${claim}`);
         }
       }
 
-      console.log(`\n${results.length} mutations — ${results.length - survived} killed, ${survived} survived`);
+      const { survived, errored, killed, total } = summarizeMutations(results);
+      const erroredNote = errored.length > 0 ? `, ${errored.length} could not run` : "";
+      console.log(`\n${total} mutations: ${killed} killed, ${survived.length} survived${erroredNote}`);
+
+      if (errored.length > 0) {
+        console.log(`\n⚠  ${errored.length} mutant(s) never loaded, so they tell you nothing about claim strength.`);
+        console.log(`   This usually means the module cannot be imported in isolation; check for a`);
+        console.log(`   side-effecting import or a path that only resolves from a particular cwd.`);
+      }
 
       // Complexity coverage advisory: flag high-complexity functions with limited mutation probes
       const facts = await extractFacts(modulePath);
@@ -489,12 +323,12 @@ async function main() {
       if (highComplexity.length > 0) {
         console.log(`\nComplexity advisory:`);
         for (const f of highComplexity) {
-          console.log(`  ${f.mutationRisk === "high" ? "🔴" : "🟡"} ${f.name}: complexity ${f.complexity} — consider adding targeted perspectives`);
+          console.log(`  ${f.mutationRisk === "high" ? "🔴" : "🟡"} ${f.name}: complexity ${f.complexity}; consider adding targeted perspectives`);
         }
       }
 
-      if (survived > 0) {
-        console.log(`\n⚠  ${survived} mutation(s) not caught — add perspectives to strengthen these claims`);
+      if (survived.length > 0) {
+        console.log(`\n⚠  ${survived.length} mutation(s) not caught; add perspectives to strengthen these claims`);
         process.exit(1);
       } else {
         console.log("✓ All mutations caught by LLD assertions");
@@ -502,105 +336,27 @@ async function main() {
       break;
     }
 
-    default:
+    case "help":
+    case "--help":
+    case "-h":
       console.log(HELP);
+      break;
+
+    // A mistyped command that prints help and exits 0 passes a CI step that meant to run
+    // something. Asking for help is a success; failing to name a command is not.
+    default:
+      console.error(`lldtdd: unknown command: ${command}\n`);
+      console.error(HELP);
+      process.exit(1);
   }
 }
 
-function gitChangedFiles(cwd: string): Set<string> | null {
-  try {
-    const { execSync } = require("child_process") as typeof import("child_process");
-    const out = execSync("git diff --name-only HEAD 2>/dev/null", { encoding: "utf-8", cwd }).trim();
-    if (!out) return new Set(); // git works but nothing changed
-    return new Set(out.split("\n").map(f => resolve(cwd, f)));
-  } catch {
-    return null; // not a git repo or git unavailable — run drift on everything
-  }
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function printTestCaseDetail(tc: import("./types.ts").TestCase | undefined, indent: string): void {
-  if (!tc) return;
-
-  // Source tag — color by origin
-  const rawTag = tc.source === "needs-fixture" ? "[pending]"
-    : tc.source === "deterministic"             ? "[grammar]"
-    : tc.source === "ast-derived"               ? "[ast]"
-    : tc.source === "ai"                        ? "[ai]"
-    : `[${tc.source}]`;
-  const sourceTag = c.gray(rawTag);
-
-  // Action expression
-  let action = "";
-  if (tc.action.method) {
-    const argStr = (tc.action.args ?? []).map(a =>
-      typeof a === "object" && a !== null && "__expr" in a
-        ? (a as { __expr: string }).__expr
-        : JSON.stringify(a)
-    ).join(", ");
-    action = `${c.cyan(tc.action.method)}(${c.dim(argStr)})`;
-    if (tc.action.captures) action += ` ${c.dim("→")} ${tc.action.captures}`;
-    if (tc.action.extraCall) {
-      const ecArgs = (tc.action.extraCall.args ?? []).map(a =>
-        typeof a === "object" && a !== null && "__expr" in a
-          ? (a as { __expr: string }).__expr
-          : JSON.stringify(a)
-      ).join(", ");
-      action += `  ${c.dim("then")}  ${c.cyan(tc.action.extraCall.method)}(${c.dim(ecArgs)}) ${c.dim("→")} ${tc.action.extraCall.captures}`;
-    }
-  } else if (tc.assertion.type === "inspect" && tc.assertion.code) {
-    const raw = tc.assertion.code.split("\n").find(l => l.trim())?.trim() ?? "";
-    action = c.dim(raw);
-  } else if (tc.action.argDescription) {
-    action = c.dim(`(${tc.action.argDescription})`);
-  }
-
-  // Assertion summary — color by type
-  const assertionColor: Record<string, (s: string) => string> = {
-    resolves:        c.green,
-    throws:          c.red,
-    equals:          c.green,
-    "schema-drop":   c.cyan,
-    "fault-resilience": c.yellow,
-    inspect:         c.cyan,
-    called:          c.gray,
-    calledWith:      c.gray,
-    notCalled:       c.gray,
-  };
-  const colorFn = assertionColor[tc.assertion.type] ?? ((s: string) => s);
-  let assertion = colorFn(tc.assertion.type);
-  if (tc.assertion.type === "equals")
-    assertion += c.dim(`: ${JSON.stringify(tc.assertion.expected)}`);
-  if (tc.assertion.type === "inspect" && tc.assertion.code) {
-    const firstLine = tc.assertion.code.split("\n").find(l => l.trim())?.trim() ?? "";
-    assertion += c.dim(`: ${firstLine}`);
-  }
-  if (tc.assertion.type === "schema-drop" && tc.assertion.knownFields?.length)
-    assertion += c.dim(`: [${tc.assertion.knownFields.join(", ")}]`);
-  if (tc.assertion.type === "fault-resilience" && tc.assertion.faultTarget)
-    assertion += c.dim(`: ${tc.assertion.faultTarget}`);
-
-  console.log(`${indent}${sourceTag}  ${action}  ${c.dim("→")}  ${assertion}`);
-}
-
-function mutationBehavior(description: string): string {
-  if (/return value.*null/i.test(description)) return "return value is never asserted";
-  if (/=== → !==/i.test(description))           return "equality result is never asserted";
-  if (/throw guard negated/i.test(description))  return "error condition is never asserted";
-  if (/guard removed/i.test(description))        return "null/undefined guard is never asserted";
-  if (/return true.*false/i.test(description))   return "boolean return value is never asserted";
-  if (/return false.*true/i.test(description))   return "boolean return value is never asserted";
-  return description;
-}
-
-// Only run as a process entry point — not when imported as a module.
-// This guard makes the module safe to import for testing runAndCheck etc.
 if (import.meta.main) {
   main().catch(err => {
-    console.error(err);
+    // A stack trace names this tool's internals, which is the wrong thing to show someone who
+    // mistyped a path. The stack is still one env var away for an actual bug.
+    if (process.env.LLDTDD_DEBUG) console.error(err);
+    else console.error(`lldtdd: ${err instanceof Error ? err.message : String(err)}\n  (set LLDTDD_DEBUG=1 for the stack trace)`);
     process.exit(1);
   });
 }

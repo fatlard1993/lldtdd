@@ -1,35 +1,23 @@
 # Event Bus
 > examples/eventBus.ts
 
-In-process pub/sub. Handlers are called synchronously in the order they subscribed. Events are not stored: subscribing after a publish never receives past events.
+Handlers are called synchronously, in the order they subscribed. Events are not stored: subscribing after a publish never receives past events.
 
 ## Publishing
 **setup:** `createEventBus()`
 **method:** `publish`
 
-- publishing to a subscribed topic calls all handlers with the event
 - publishing to an unsubscribed topic does nothing // no error, no effect
-- the handler receives the exact same object reference that was published, not a copy
-
-## Subscribing and unsubscribing
-**setup:** `createEventBus()`
-**method:** `subscribe`
-
-- subscribe returns an unsubscribe function
-- calling unsubscribe stops future delivery for that handler // past deliveries are unaffected
-- subscribing the same handler twice -> handler called twice per publish // not deduplicated
-- subscribing after a publish does not receive that event
-
-## Subscription order is preserved
-
-**method:** `orderPreserved`
-
-- handlers are called in the order they subscribed — the first subscriber receives the event before later subscribers
-  - orderPreserved() captures result → result[0] === "first"
+  - publish("nobody-listening", { id: 1 }) -> resolves
+  - subscribe("other-topic", spy) captures unsub then publish("nobody-listening", { id: 1 }) captures sent -> spy not called
+- subscribing after a publish does not receive that event // events are not stored
+  - publish("orders", { id: 1 }) captures sent then subscribe("orders", spy) captures unsub -> spy not called
 
 ## Error isolation
 **setup:** `createEventBus()`
 **method:** `publish`
 
-- a throwing handler does not prevent subsequent handlers from running
 - a throwing handler's error does not propagate to the publisher // publish never throws due to a handler
+  - subscribe("orders", thrower) captures unsub then publish("orders", { id: 1 }) captures sent -> resolves
+- a throwing handler does not prevent subsequent handlers from running // isolation is per-handler, not per-publish
+  - subscribe("orders", thrower) captures u1 then subscribe("orders", spy) captures u2 then publish("orders", { id: 1 }) captures sent -> spy called

@@ -1,7 +1,7 @@
 export const __lld_api = `
   addItem(sessionId, itemId, qty?) -> Cart | adds item to session cart; throws CartError if out-of-stock or nonexistent
   getTotal(sessionId) -> number | sum of current catalog prices * quantities; 0 for empty/unknown session
-  checkout(sessionId, discountCode?) -> { total, discountApplied }
+  checkout(sessionId, discountCode?) -> { total, discountApplied } | not implemented; throws CartError. Out of scope for cart.lld.md
   logout(sessionId) -> void | clears the cart for that session
   Catalog items: "sku-apple" (in stock), "sku-banana" (in stock), "sku-out" (out of stock)
   Each session has its own cart; sessions are independent
@@ -60,8 +60,11 @@ export function getTotal(sessionId: string): number {
   );
 }
 
-export function checkout(_sessionId: string, _discountCode?: string) {
-  return { total: 0, discountApplied: false };
+// Out of scope for cart.lld.md, and this file is example code people copy: a stub that returns
+// a plausible `{ total: 0, discountApplied: false }` reads as implemented and would quietly pass
+// a claim about checkout. Failing loudly is the honest shape for a function that isn't written.
+export function checkout(_sessionId: string, _discountCode?: string): { total: number; discountApplied: boolean } {
+  throw new CartError("checkout is not implemented");
 }
 
 export function logout(sessionId: string): void {

@@ -3,10 +3,9 @@ interface Window {
   resetAt: number;
 }
 
-// Describes the API for the AI code generator when this module is used as a test target
 export const __lld_api = `
   createLimiter(limit, windowMs) -> checkFn | the returned checkFn IS _subject in tests; call _subject(key) -> { allowed: boolean, remaining: number }
-  In tests with **setup:** createLimiter(N, ms), all assertions call _subject("key") — not Subject.createLimiter
+  In tests with **setup:** createLimiter(N, ms), all assertions call _subject("key"), not Subject.createLimiter
   _subject(key) returns { allowed: true/false, remaining: number }; remaining counts down from limit to 0
 `;
 

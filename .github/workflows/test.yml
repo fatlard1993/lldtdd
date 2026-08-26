@@ -1,0 +1,51 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A pull request's documents are executable input to the `run` step below, and a fork can open
+# one. Read-only is all any step here needs; the default token scopes are wider than that.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # This job checks out and runs PR code; don't leave the token in .git/config.
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Run test suite
+        run: bun test
+
+      - name: Lint lldtdd's own LLD files
+        run: bun run src/cli.ts lint
+
+      # Dogfooding: lldtdd running its own documents, as an audit rather than a gate. The run
+      # reports doc health in the CI logs; pending claims do not fail the build. Genuine claim
+      # failures still do, via plain `run` exit behavior (see lld/run.lld.md for the exit-code
+      # contract, exercised as claims against the runner itself). Surviving mutations and drift
+      # are reported but advisory. The --fail-on-pending / --fail-on-weak flags remain available
+      # in the CLI as opt-in ratchets; CI just no longer uses them.
+      #
+      # The default glob skips fixtures/, so the documents under lld/fixtures/ that are broken
+      # or failing on purpose stay out of this sweep without needing a hand-tuned pattern.
+      # This step includes the mutation pass and takes a few minutes, mostly in the ts-morph
+      # parse of src/drift.ts once per mutant.
+      - name: Run lldtdd against its own documents
+        run: bun run src/cli.ts run
+        timeout-minutes: 15
