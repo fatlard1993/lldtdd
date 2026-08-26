@@ -69,12 +69,6 @@ async function session(): Promise<Session | null> {
     const proc = Bun.spawn([
       bin, "--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`,
       "--no-first-run", "--no-default-browser-check", "--disable-gpu", "--hide-scrollbars",
-      // CI only: GitHub's ubuntu-24.04 runners AppArmor-block the unprivileged user namespaces
-      // Chrome's sandbox needs, so it dies before ever writing DevToolsActivePort -- which is the
-      // failure the timeout below reports, uselessly, as a launch that went quiet. Locally the
-      // sandbox stays on; in CI the runner VM is the isolation boundary, and the job it runs in
-      // already executes the same untrusted document code directly in bun.
-      ...(process.env.CI ? ["--no-sandbox"] : []),
       // A stated viewport is part of the question: "flips when it would overflow" has no meaning
       // without an edge to overflow. This is the one layout input a claim cannot supply itself.
       "--window-size=1024,768", "about:blank",
@@ -89,7 +83,12 @@ async function session(): Promise<Session | null> {
     // Chrome already listening there would mean silently driving the user's own session.
     const port = await (async () => {
       const portFile = join(profile, "DevToolsActivePort");
-      for (let i = 0; i < 200; i++) {
+      // 30s, not 5s: the very first Chrome launch on a cold VM (a fresh CI runner) can spend
+      // longer than 5s in startup before the port file exists, and a too-short wait kills a
+      // healthy browser mid-boot -- indistinguishable in the error from one that crashed, except
+      // that a crash leaves stderr text and a slow boot leaves none. Polling makes the common
+      // case pay only what it costs.
+      for (let i = 0; i < 1200; i++) {
         try {
           const p = parseInt((await readFile(portFile, "utf8")).split("\n")[0], 10);
           if (Number.isFinite(p) && p > 0) return p;
@@ -99,11 +98,12 @@ async function session(): Promise<Session | null> {
       return null;
     })();
     if (port === null) {
+      const alreadyDead = proc.exitCode !== null;
       proc.kill(9);
       await proc.exited;
       const err = (await stderrText).trim();
       throw new Error(
-        `browser launched but never wrote DevToolsActivePort in ${profile}${err ? ` -- ${err}` : ""}`,
+        `browser ${alreadyDead ? `exited (code ${proc.exitCode}) without writing` : "launched but never wrote"} DevToolsActivePort in ${profile}${err ? ` -- ${err}` : ""}`,
       );
     }
 
