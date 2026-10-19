@@ -461,6 +461,12 @@ function generateGroup(group: TestGroup, indent: string, subjectAlias = "Subject
   return lines;
 }
 
+// Inspect code is written against `Subject`, the module its claim is about. In a `**module:**` group that
+// module is imported under its own alias, and `Subject` is the document's primary module instead.
+function forGroup(code: string, subjectAlias: string): string {
+  return subjectAlias === "Subject" ? code : code.replace(/\bSubject\./g, `${subjectAlias}.`);
+}
+
 function caseToCode(tc: TestCase, indent: string, hasSetup: boolean, subjectAlias = "Subject", hasSubjectCtor = false): string[] {
   const desc = JSON.stringify(tc.description);
 
@@ -590,7 +596,7 @@ function caseToCode(tc: TestCase, indent: string, hasSetup: boolean, subjectAlia
       // declaration and the generated file won't compile.
       const cap = tc.action.captures;
       const dupePat = new RegExp(`^\\s*const\\s+${cap}\\s*=\\s*await[^;]+;\\s*`);
-      const cleanCode = tc.assertion.code.replace(dupePat, "");
+      const cleanCode = forGroup(tc.assertion.code, subjectAlias).replace(dupePat, "");
       if (cleanCode.trim()) lines.push(`${indent}  ${cleanCode}`);
     } else if (isSpy) {
       // A chained claim that registered `spy` itself: the calls above already subscribed and
@@ -737,7 +743,7 @@ function assertionCode(tc: TestCase, call: string, indent: string, subjectAlias:
             `this would generate a test that passes without checking anything (claim: ${tc.description})`
           );
         }
-        const codeLines = a.code.split("\n").map(line => `${indent}${line.trim()}`).filter(Boolean);
+        const codeLines = forGroup(a.code, subjectAlias).split("\n").map(line => `${indent}${line.trim()}`).filter(Boolean);
         // If the code references _result, it needs a binding first
         if (a.code.includes("_result")) {
           return [`${indent}const _result = await ${call};`, ...codeLines];
