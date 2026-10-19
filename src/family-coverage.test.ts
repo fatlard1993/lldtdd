@@ -92,6 +92,10 @@ const COVERAGE: Record<string, Coverage> = {
     probedBy: "ast.test.ts -- a namesake math helper (`base ** exp`) named derive stays pending rather than failing",
   },
 
+  resolveStorePatterns: {
+    gate: "a collection the module declares with createStore, which reaches its writes through the database module's `db`",
+    probedBy: "lld/fixtures/stock/crates.ts -- a createStore collection with typed specs named through a const (`const fields =`), its own queued store; lld/fixtures/loose/createStore.ts is the same shape unqueued (`await db.write();` straight away), whose order claim must fail",
+  },
   resolveCrudSearchPatterns: {
     gate: "a createCRUD-detected schema; per pattern, whatever that body imports (_database, _registry) or reads off the module's own afterDelete hook",
     probedBy: "lld/fixtures/store/vessels.ts -- a createCRUD entity whose fields (`hullName`, berth, capacity) look nothing like the one it was written against; run through lld/fixtures/vessels.lld.md below",
@@ -261,6 +265,27 @@ describe("CRUD family derives against a second createCRUD consumer", () => {
     expect(r.failed).toBe(0);
     expect(r.pending).toBe(0);
     expect(r.passed).toBe(2);
+  }, 60_000);
+});
+
+/**
+ * A createStore collection is a CRUD entity whose store queues its own changes. The first fixture is a
+ * store whose changes take turns, declared with typed field specs through a const, so the schema read
+ * covers the shape real apps write. The second is the same shape with no queue: its order claim has to
+ * fail, which is what shows the check slows a write down rather than passing on timing.
+ */
+describe("createStore collections derive the CRUD and write-order families", () => {
+  it("derives and passes every claim against a queued store", async () => {
+    const r = await runAndCheck("lld/fixtures/stock.lld.md", process.cwd(), { silent: true, mutate: false });
+    expect(r.failed).toBe(0);
+    expect(r.pending).toBe(0);
+    expect(r.passed).toBe(4);
+  }, 60_000);
+
+  it("fails the write-order claim against a store whose changes don't take turns", async () => {
+    const r = await runAndCheck("lld/fixtures/loose.lld.md", process.cwd(), { silent: true, mutate: false });
+    expect(r.passed).toBe(0);
+    expect(r.failed).toBe(1);
   }, 60_000);
 });
 

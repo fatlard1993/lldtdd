@@ -1,4 +1,4 @@
-// Schema and CRUD fact derivation: everything keyed off the createCRUD factory convention --
+// Schema and CRUD fact derivation: everything keyed off the createCRUD / createStore factory convention --
 // schema extraction, hook extraction, foreign keys inferred from hook triggers, the entity
 // index, and the return types of the virtual methods the CRUD/self-database families emit.
 // Regex substance, like sourceScrapers.ts; split out because these facts form one CRUD-shaped
@@ -8,10 +8,10 @@ import type { SchemaInfo, HookInfo } from "./types.ts";
 
 // ── Schema extraction ─────────────────────────────────────────────────
 // Detects: createCRUD('name', ['field1', 'field2'], { hooks })
-//          mongoose.Schema({ field: type })
-//          similar factory / schema patterns
+//          createStore({ collection: 'name', fields: <list | defaults map | typed specs>, hooks })
 
 const CRUD_FACTORY = /createCRUD\(\s*['"`](\w+)['"`]\s*,\s*(\[[^\]]+\])/g;
+const STORE_FACTORY = /\bcreateStore\(\s*\{/g;
 const FIELD_LIST   = /['"`](\w+)['"`]/g;
 const FIELD_DEFAULT_EQ_EMPTY = /\?\?\s*['"]{2}/;  // ?? '' pattern
 const FIELD_DEFAULT_NULL      = /\?\?\s*null/;
@@ -31,10 +31,113 @@ export function extractSchemas(source: string): SchemaInfo[] {
       : undefined;
 
     const hooks = extractHooks(source, collection);
-    schemas.push({ collection, fields, fieldDefault, hooks });
+    schemas.push({ collection, fields, fieldDefault, hooks, factory: "createCRUD" });
+  }
+
+  for (const match of source.matchAll(STORE_FACTORY)) {
+    const options = balanced(source, match.index! + match[0].length - 1);
+    if (!options) continue;
+
+    const props = topLevelProps(options);
+    const collection = props.get("collection")?.match(/^['"`](\w+)['"`]$/)?.[1];
+    const fields = fieldNames(props.get("fields"), source);
+    // A store with no literal collection name or no readable fields has nothing to derive against
+    if (!collection || !fields.length) continue;
+
+    // A store fills a missing declared field with its type's empty value, '' for the untyped shorthands
+    const hooks = extractHooks(props.get("hooks") ?? "", collection);
+    schemas.push({ collection, fields, fieldDefault: "''", hooks, factory: "createStore" });
   }
 
   return schemas;
+}
+
+// The text of the bracketed span opening at `start` ({, [ or (), brackets inside strings ignored
+function balanced(source: string, start: number): string | undefined {
+  const open = source[start];
+  const close = ({ "{": "}", "[": "]", "(": ")" } as Record<string, string>)[open];
+  if (!close) return undefined;
+
+  let depth = 0;
+  let quote: string | undefined;
+  for (let i = start; i < source.length; i++) {
+    const c = source[i];
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = undefined;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === "`") quote = c;
+    else if (c === "{" || c === "[" || c === "(") depth++;
+    else if (c === "}" || c === "]" || c === ")") {
+      depth--;
+      if (depth === 0) return c === close ? source.slice(start, i + 1) : undefined;
+    }
+  }
+  return undefined;
+}
+
+// An object literal's top-level properties: name -> value text. A shorthand (`db,`) maps to its own name.
+function topLevelProps(objectText: string): Map<string, string> {
+  const props = new Map<string, string>();
+  const body = objectText.slice(1, -1);
+  let i = 0;
+
+  while (i < body.length) {
+    const key = body.slice(i).match(/^[\s,]*(?:(\w+)|['"`](\w+)['"`])\s*(:)?/);
+    if (!key || !(key[1] ?? key[2])) break;
+
+    const name = (key[1] ?? key[2])!;
+    i += key[0].length;
+
+    if (!key[3]) {
+      // A method (`beforeCreate(entry) {`) or a shorthand property
+      const method = body.slice(i).match(/^\s*\(/);
+      if (method) {
+        const params = balanced(body, i + method[0].length - 1);
+        const brace = params ? body.indexOf("{", i + method[0].length - 1 + params.length) : -1;
+        const fn = brace >= 0 ? balanced(body, brace) : undefined;
+        props.set(name, fn ?? "");
+        i = brace >= 0 && fn ? brace + fn.length : body.length;
+      } else props.set(name, name);
+      continue;
+    }
+
+    // The value runs to the next top-level comma
+    let j = i;
+    while (j < body.length && body[j] !== ",") {
+      const c = body[j];
+      if (c === "{" || c === "[" || c === "(") {
+        const span = balanced(body, j);
+        if (!span) return props;
+        j += span.length;
+      } else if (c === "'" || c === '"' || c === "`") {
+        const end = body.indexOf(c, j + 1);
+        j = end < 0 ? body.length : end + 1;
+      } else j++;
+    }
+    props.set(name, body.slice(i, j).trim());
+    i = j;
+  }
+
+  return props;
+}
+
+// Field names from a store's fields option: a list of names, or an object whose keys are the names (a
+// defaults map or typed specs). A bare identifier is followed to the const it names.
+function fieldNames(value: string | undefined, source: string): string[] {
+  if (!value) return [];
+
+  if (/^\w+$/.test(value)) {
+    const decl = source.match(new RegExp(`\\b(?:const|let|var)\\s+${value}\\s*(?::[^=]+)?=\\s*`));
+    const start = decl ? decl.index! + decl[0].length : -1;
+    const literal = start >= 0 ? balanced(source, start) : undefined;
+    return literal ? fieldNames(literal, source) : [];
+  }
+
+  if (value.startsWith("[")) return [...value.matchAll(FIELD_LIST)].map(f => f[1]);
+  if (value.startsWith("{")) return [...topLevelProps(value).keys()];
+  return [];
 }
 
 function extractHooks(source: string, _collection: string): HookInfo[] {
@@ -69,9 +172,9 @@ function extractHooks(source: string, _collection: string): HookInfo[] {
 
 // ── Default-export CRUD detection ────────────────────────────────────
 
-/** Detects if this is a default-exporting CRUD module (createCRUD pattern in source). */
+/** Detects if this is a default-exporting CRUD module (createCRUD or createStore pattern in source). */
 export function detectDefaultCrudExport(source: string): boolean {
-  return /export\s+default\s+createCRUD\b/.test(source)
+  return /export\s+default\s+(?:createCRUD|createStore)\b/.test(source)
     || (/export\s+default\s+/.test(source) && extractSchemas(source).length > 0);
 }
 

@@ -112,10 +112,13 @@ export function generateDerivedApiFromFacts(facts: AstFacts): string {
     }
 
     // afterDelete with orphan + move semantics -- only when THIS collection's createCRUD
-    // call includes an afterDelete hook (not when it leaks from an imported module)
-    const collectionHasAfterDelete = new RegExp(
-      `createCRUD\\s*\\(\\s*['"\`]${schema.collection}['"\`][\\s\\S]{0,500}afterDelete`
-    ).test(facts.source);
+    // call includes an afterDelete hook (not when it leaks from an imported module). A createStore
+    // call's hooks were read from its own options, so they are this collection's already.
+    const collectionHasAfterDelete = schema.factory === "createStore"
+      ? schema.hooks.some(h => h.kind === "afterDelete")
+      : new RegExp(
+        `createCRUD\\s*\\(\\s*['"\`]${schema.collection}['"\`][\\s\\S]{0,500}afterDelete`
+      ).test(facts.source);
     if (collectionHasAfterDelete) {
       // Detect the target collection referenced in the afterDelete hook body
       const afterDeleteCollMatch = facts.source.match(/afterDelete[\s\S]{0,200}database\.db\.data\.(\w+)/);
@@ -125,6 +128,15 @@ export function generateDerivedApiFromFacts(facts: AstFacts): string {
       lines.push(`  deleteAndMove() -> void | create two ${entityPlural2}, seed a ${targetColl} record assigned to the first, delete the first with moveTo=second id; the ${targetColl} record's ${entity} equals the second id`);
       lines.push(`  snapshotRestoresOnFailure() -> void | create a ${entity} and a destination ${entity}, seed two ${targetColl} records referencing it with one frozen to force a mid-loop failure, delete the ${entity} with moveTo the destination; the failure restores all affected ${targetColl} records to their pre-delete values`);
     }
+  }
+
+  // ── createStore collections: the store queues each change behind the last ──
+  // The same vocabulary as a self-database's queue below, so a document's write-order and recovery
+  // claims read the same whichever of the two holds the queue. What derives from it checks the order
+  // against the store's own writes, so a store whose changes don't take turns fails the claim.
+  if (facts.storeQueuesChanges && !facts.isSelfDatabase) {
+    lines.push(`  writesInOrder() -> boolean | concurrent writes complete in order; write ordering is structural; returns true if queue order is preserved`);
+    lines.push(`  queueFailThenRecover() -> boolean | a failed write does not stall the queue; error recovery is structural; returns true if queue continued after failure`);
   }
 
   // ── Self-database modules: write-queue and schema-evolution patterns ──

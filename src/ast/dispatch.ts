@@ -8,7 +8,7 @@ import { syntheticValue } from "./types.ts";
 import { extractFieldTypes } from "./sourceScrapers.ts";
 import { resolveTransformPatterns } from "./patterns/transform.ts";
 import { resolveCliClassPatterns, resolveCliParserPatterns, buildZeroArgInline } from "./patterns/cli.ts";
-import { resolveSelfDatabasePatterns, resolveCrudSearchPatterns } from "./patterns/crud.ts";
+import { resolveSelfDatabasePatterns, resolveStorePatterns, resolveCrudSearchPatterns } from "./patterns/crud.ts";
 import { deriveEventTargetInline } from "./patterns/event-target.ts";
 import { deriveDerivationFactoryInline, deriveStyledFactoryInline } from "./patterns/factory.ts";
 import { deriveComponentInline } from "./patterns/component.ts";
@@ -34,6 +34,7 @@ export function resolveMethodCall(
   return resolveTransformPatterns(lower, methodName, facts)
     ?? resolveCliParserPatterns(lower, apiDescription, facts)
     ?? resolveSelfDatabasePatterns(lower, facts)
+    ?? resolveStorePatterns(lower, facts, baseArgs)
     ?? resolveCrudSearchPatterns(lower, apiDescription, facts, schema, baseArgs);
 }
 

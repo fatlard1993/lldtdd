@@ -1,6 +1,6 @@
 // Self-database and CRUD-search pattern resolvers: claims about a module whose primary
 // export IS the persistence layer, and the broader schema-driven create/search/seed
-// vocabulary used against createCRUD-style modules.
+// vocabulary used against createCRUD-style modules (createStore collections included).
 
 import type { AstFacts, InlineDerived, SchemaInfo } from "../types.ts";
 import { syntheticValue } from "../types.ts";
@@ -37,6 +37,44 @@ export function resolveSelfDatabasePatterns(lower: string, facts: AstFacts): Inl
 
   // A claim about field defaults is checkable against a module that declares its fields; point it
   // at that module and the CRUD vocabulary covers it.
+
+  return null;
+}
+
+// ── createStore patterns: a collection whose store queues each change behind the last ──
+// The writes go through whatever the store writes to, reached as the database module's `db` (or the
+// module itself when it is the writer). The order check slows the first write down: changes that take
+// turns still finish first-made-first, and changes that don't would finish the other way round, so the
+// claim can fail rather than pass on timing luck.
+export function resolveStorePatterns(
+  lower: string,
+  facts: AstFacts,
+  baseArgs: Record<string, unknown>
+): InlineDerived | null {
+  if (!facts.storeQueuesChanges || facts.isSelfDatabase) return null;
+
+  const create = `Subject.create(${JSON.stringify(baseArgs)})`;
+
+  if (/queue writes.*returns true if.*completed before|writes.*in order|order\w*.*structural|structural.*order\w*/.test(lower)) {
+    const code = [
+      `const _writer = _database.db ?? _database;`,
+      `const _write = _writer.write;`,
+      `let _slowFirst = true;`,
+      `_writer.write = async function (...args) { if (_slowFirst) { _slowFirst = false; await new Promise(r => setTimeout(r, 25)); } return _write.apply(this, args); };`,
+      `let order;`,
+      `try { order = await withOrderTracking(() => ${create}, () => ${create}); } finally { _writer.write = _write; }`,
+      `expect(order).toEqual([1, 2]);`,
+    ].join("\n");
+    return { method: "create", callArgs: [], inspectCode: code };
+  }
+
+  if (/fail\w*.*recover|recover.*fault|does not stall|queue continu\w*/.test(lower)) {
+    const code = [
+      `const result = await withFaultInjection(_database.db ?? _database, "write", () => ${create});`,
+      `expect(result).toBe(true);`,
+    ].join("\n");
+    return { method: "create", callArgs: [], inspectCode: code };
+  }
 
   return null;
 }

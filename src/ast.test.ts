@@ -6,6 +6,7 @@ import {
 } from "./ast/index.ts";
 import { deriveStyledFactoryInline, isComponentClassFactory } from "./ast/patterns/factory.ts";
 import { declaredConstructorOptions } from "./ast/declaredOptions.ts";
+import { extractSchemas } from "./ast/crudSchema.ts";
 
 /**
  * Regression matrix for the claim-text → inline-code pattern catalogs.
@@ -881,5 +882,36 @@ describe("degraded extraction", () => {
   it("stays empty when every stage runs clean", async () => {
     const facts = await extractFactsFromSource("export const add = (a: number, b: number) => a + b;\n");
     expect(facts.degraded).toEqual([]);
+  });
+});
+
+/**
+ * A createStore collection names its fields three ways -- a list, a map of defaults, or a map of typed
+ * specs -- often through a const. Each is the same schema to the CRUD family. Its hooks are read from
+ * its own options, so a neighbouring collection's afterDelete isn't taken for its own.
+ */
+describe("createStore schemas", () => {
+  const fieldsOf = (source: string) => extractSchemas(source).map(schema => [schema.collection, schema.fields]);
+
+  it("reads a list, a defaults map, and typed specs named through a const", () => {
+    expect(fieldsOf(`createStore({ db, collection: "crates", fields: ["label", "bay"] })`)).toEqual([["crates", ["label", "bay"]]]);
+    expect(fieldsOf(`createStore({ collection: "pains", fields: { name: "", order: 0, notes: () => "" } })`))
+      .toEqual([["pains", ["name", "order", "notes"]]]);
+    expect(fieldsOf(`const fields = { name: { type: "string", required: true }, tags: { type: "stringArray" } };\ncreateStore({ db, collection: "games", fields, versioned: true });`))
+      .toEqual([["games", ["name", "tags"]]]);
+  });
+
+  it("marks the schema as a store's, and keeps its hooks its own", () => {
+    const [crates, bays] = extractSchemas(
+      `createStore({ db, collection: "crates", fields: ["label"], hooks: { beforeCreate(entry, data) { if (data.bay?.create) {} } } });\n` +
+      `createStore({ db, collection: "bays", fields: ["name"], hooks: { afterDelete(id) {} } });`,
+    );
+    expect(crates.factory).toBe("createStore");
+    expect(crates.hooks.map(hook => hook.kind)).toEqual(["beforeCreate"]);
+    expect(bays.hooks.map(hook => hook.kind)).toEqual(["afterDelete"]);
+  });
+
+  it("skips a store with no literal collection name, since there is nothing to name its records by", () => {
+    expect(extractSchemas(`createStore({ db, fields: ["a"] })`)).toEqual([]);
   });
 });

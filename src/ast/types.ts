@@ -76,6 +76,9 @@ export interface SchemaInfo {
   fieldDefault?: string;
   /** Hooks that fire on mutation and what they respond to. */
   hooks: HookInfo[];
+  /** Which factory declared it. A `createStore` collection's changes take turns: the store queues them,
+   *  which is what the write-order and recovery claims check against it. */
+  factory?: "createCRUD" | "createStore";
 }
 
 export interface HookInfo {
@@ -239,6 +242,11 @@ export interface AstFacts {
    *  When true, the adapter uses the primary module import as _database.
    */
   isSelfDatabase?: boolean;
+  /** True when the module declares its own collection with `createStore`, whose changes take turns: each
+   *  waits for the one before it, so a slow write can't be overtaken and a failed one doesn't stall the
+   *  next. The write-order and recovery claims check that against the store, not against a queue of the
+   *  project's own. */
+  storeQueuesChanges?: boolean;
   /** Path to the module whose function chains should be imported as `_PipelineStage`.
    * Set to the module path when at least one function type chain is detected.
    * The adapter uses it to emit `import * as _PipelineStage from "..."`.

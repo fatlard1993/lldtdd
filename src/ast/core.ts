@@ -123,6 +123,7 @@ export async function extractFactsFromSource(
     source: allSource,
     primaryActionModule,
     isSelfDatabase,
+    storeQueuesChanges: extractSchemas(source).some(s => s.factory === "createStore"),
     usesProcessArgv:   /\bprocess\.argv\b/.test(source),
     mayCallProcessExit: /\bprocess\.exit\b/.test(source),
     constructorModulePath: resolveConstructorModulePath(source, modulePath),
