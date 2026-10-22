@@ -29,7 +29,7 @@ export async function parseFile(filePath: string, root?: string): Promise<LLDDoc
  *
  *  Without the check, an absolute pointer discards `root` entirely -- resolve ignores every
  *  segment before an absolute one -- and a relative pointer climbs out with enough `..`. The
- *  resolved path is later read by lint and suggest, and the pre-commit hook runs lint on its own,
+ *  resolved path is later read by lint and suggest, and the pre-push hook runs lint on its own,
  *  so "lint does not leave the project" was true only by convention of the corpus. This makes it
  *  a property of the resolver.
  *
@@ -40,7 +40,7 @@ export async function parseFile(filePath: string, root?: string): Promise<LLDDoc
  *
  *  Containment follows symlinks (see isContained). A module pointer is a read into a document's repo,
  *  and that document may not be the reader's own -- lint runs on documents you did not write, and the
- *  pre-commit hook runs lint. A committed symlink whose lexical path stays inside root but whose
+ *  pre-push hook runs lint. A committed symlink whose lexical path stays inside root but whose
  *  target is `/etc/...` is exactly the escape a reviewer of the `.lld.md` cannot see, so the boundary
  *  is on where the path actually leads, not on how it is spelled. */
 function resolveModulePointer(raw: string, docDir: string, root: string): string {

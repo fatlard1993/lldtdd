@@ -36,8 +36,8 @@ describe("lintFile", () => {
 
   it("reports errors for a document missing its title and module pointer", async () => {
     // lld/fixtures/missing-structure.lld.md is checked in specifically to be broken. It lives
-    // under lld/fixtures/ rather than lld/ so the single-level glob in .githooks/pre-commit and
-    // CI ("{lld,examples}/*.lld.md") does not pick it up and fail every commit.
+    // under lld/fixtures/, which the default glob skips, so the lint sweep in .githooks/pre-push
+    // and CI does not pick it up and fail every run.
     const result = await lintFile(resolve(REPO_ROOT, "lld/fixtures/missing-structure.lld.md"));
     expect(result.errors).toBeGreaterThan(0);
   });

@@ -204,7 +204,7 @@ describe("a parenthesized expression as an argument", () => {
 
 /**
  * The module pointer is a path the pipeline later reads -- lint and suggest open it, and the
- * pre-commit hook runs lint on its own. Before this boundary existed, an absolute pointer
+ * pre-push hook runs lint on its own. Before this boundary existed, an absolute pointer
  * discarded the project root entirely (resolve keeps nothing before an absolute segment) and a
  * relative one climbed out with enough `..`, so "lint does not leave the project" was true only
  * because the corpus happened to be polite.

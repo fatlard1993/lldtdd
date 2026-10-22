@@ -25,8 +25,8 @@ The read-only commands do not execute the module: `lint`, `suggest`, and `drift`
 unless you pass `--execute`. They do *read* it, and follow its in-project relative imports as extra
 source for fact extraction -- but every such read is contained to the project root (symlinks
 followed), so a document you did not write cannot make them read files outside the project, whether
-through a climbing `../` import chain or a committed symlink. The pre-commit hook (`.githooks/`) lints
-only and deliberately refuses `--execute`, so checking out someone else's branch and committing does
+through a climbing `../` import chain or a committed symlink. The pre-push hook (`.githooks/`) lints
+only and deliberately refuses `--execute`, so checking out someone else's branch and pushing does
 not execute their document's code.
 
 ## The gap: the executing verb is the default
