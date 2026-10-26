@@ -183,6 +183,34 @@ describe("module substitution reaches generated code", () => {
  * arrives as a single opaque expression: scanning only top-level arguments never saw it, and the
  * emitted call named a `spy` that was never declared.
  */
+describe("a failure whose report is large", () => {
+  // bun prints the value a failed assertion received, and under a DOM that's hundreds of kilobytes.
+  // Written into a pipe, bun test dropped parts of it, (fail) lines among them, and a claim that
+  // simply failed was reported as the module not loading.
+  it("reaches the parser with every (fail) line", async () => {
+    const { mkdtemp, writeFile, rm } = await import("fs/promises");
+    const { join } = await import("path");
+    const { runCapturing } = await import("./bunRunner.ts");
+
+    // Inside the repository, to reach happy-dom in node_modules
+    const dir = await mkdtemp(join(import.meta.dir, "..", ".lldtdd-large-"));
+    try {
+      const file = join(dir, "dom.test.ts");
+      await writeFile(file, [
+        'import { GlobalRegistrator } from "@happy-dom/global-registrator";',
+        "GlobalRegistrator.register();",
+        'import { it, expect } from "bun:test";',
+        'class Widget { elem = document.createElement("div"); constructor() { document.body.append(this.elem); } }',
+        ...Array.from({ length: 6 }, (_, i) => `it("widget ${i}", () => { expect(() => new Widget()).toThrow(); });`),
+      ].join("\n"));
+      const { output } = await runCapturing(["bun", "test", file]);
+      expect(output.split("\n").filter(line => /^\(fail\)/.test(line.trim()))).toHaveLength(6);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
 describe("spy supplied by the claim rather than by setup", () => {
   const spyCase = (args: unknown[]): TestCase => ({
     description: "d",

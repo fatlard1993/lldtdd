@@ -27,6 +27,26 @@ const BROWSER_IMPORT = `import { inBrowser } from ${JSON.stringify(BROWSER_MODUL
 /** Generates a bun:test file for a translated+synthesized suite, runs it as a subprocess, and
  * parses the result. This is the only test-execution path: there is no pluggable-adapter
  * abstraction, deliberately -- one runtime, one code path. */
+/** Runs a command to its end with all it printed, stdout then stderr. They go to files, not pipes:
+ *  a failure's report under a DOM is hundreds of kilobytes, and bun test drops some of a report
+ *  that size written into a pipe, (fail) lines with it. */
+export async function runCapturing(command: string[]): Promise<{ output: string; exitCode: number }> {
+  const base = join(tmpdir(), `lldtdd-out-${randomUUID()}`);
+  const files = [`${base}.out`, `${base}.err`];
+  for (const file of files) trackTempFile(file);
+  try {
+    const proc = Bun.spawn(command, { stdout: Bun.file(files[0]), stderr: Bun.file(files[1]), cwd: process.cwd() });
+    const exitCode = await proc.exited;
+    const [out, err] = await Promise.all(files.map(file => Bun.file(file).text().catch(() => "")));
+    return { output: out + err, exitCode };
+  } finally {
+    for (const file of files) {
+      await unlink(file).catch(() => {});
+      untrackTempFile(file);
+    }
+  }
+}
+
 export async function runSuite(suite: TestSuite): Promise<RunResult> {
   const moduleExists = suite.modulePath.length > 0 && existsSync(suite.modulePath);
   const start = Date.now();
@@ -61,16 +81,8 @@ export async function runSuite(suite: TestSuite): Promise<RunResult> {
     await writeFile(tmpFile, _gen);
     if (process.env.LLDTDD_DEBUG_GEN) await writeFile(process.env.LLDTDD_DEBUG_GEN, _gen);
 
-    const proc = Bun.spawn(["bun", "test", "--timeout", "120000", tmpFile], {
-      stdout: "pipe",
-      stderr: "pipe",
-      cwd: process.cwd(),
-    });
-
-    const exitCode = await proc.exited;
-    const out = await new Response(proc.stdout).text();
-    const err = await new Response(proc.stderr).text();
-    return parseOutput(suite, out + err, Date.now() - start, exitCode);
+    const { output, exitCode } = await runCapturing(["bun", "test", "--timeout", "120000", tmpFile]);
+    return parseOutput(suite, output, Date.now() - start, exitCode);
   } finally {
     await unlink(tmpFile).catch(() => {});
     untrackTempFile(tmpFile);
